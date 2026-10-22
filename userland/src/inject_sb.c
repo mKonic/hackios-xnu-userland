@@ -24,6 +24,9 @@
  *     SpringBoard was busy waking the display: see lock_long_press().
  *   - A long press on the lock screen's wallpaper does not open the poster switcher, which the
  *     window server here shows as a black screen: see poster_switcher_allowed().
+ *   - Services this system has no daemon for are not asked of launchd again and again: see
+ *     absent_service(). SpringBoard looks up com.apple.sleepd.sleepserver in a loop, thousands of
+ *     times a second, and launchd logs every failure.
  *   - Darwin notifications as a remote control, for scripts (rwtouch notify NAME):
  *       com.redwood.unlock      what the lock screen does after "swipe up to open"
  *       com.redwood.layers      write down the layers SpringBoard has on the screen: see layers()
@@ -68,6 +71,120 @@ say(const char *format, ...)
 	}
 	write(say_fd, line, (size_t)n);
 }
+
+/*
+ * Services that are not here, and SpringBoard's lookups of them through the bootstrap server.
+ *
+ * Measured on the Pixel (AVF, 22 October): one SpringBoard thread looks up
+ * com.apple.sleepd.sleepserver over and over, with no pause, for as long as the system runs --
+ * launchd's "Last log repeated 2545 times" after one such failure, every second. Each lookup is a
+ * round trip into launchd, which also logs it ("failed lookup ... error = 3: No such process").
+ * There is no sleepd here (no daemon in the system image answers it), so the answer is known before
+ * the question: it is given here, without asking. The thread that keeps asking is slowed down
+ * instead (a tenth of a second per failed lookup after the first few in a second); the main thread
+ * never is, and a service that is not on the list is looked up as before.
+ *
+ * The services on the list have no job in launchd's list of this system (mkjobs.py: CommCenter is
+ * denied, sleepd, chronod and the rest are not in the system image or not started). Lookups of
+ * the same names through XPC (xpc_connection_create_mach_service) go to launchd as before:
+ * they come a few times a minute, not thousands of times a second.
+ */
+#include <mach/mach.h>
+#include <pthread.h>
+#include <uuid/uuid.h>
+
+/* <servers/bootstrap.h>, which the iOS SDK leaves out */
+typedef char name_t[128];
+#define BOOTSTRAP_UNKNOWN_SERVICE       1102
+extern kern_return_t bootstrap_look_up(mach_port_t bp, const name_t name, mach_port_t *sp);
+
+static const char *const absent_services[] = {
+	"com.apple.sleepd.sleepserver",
+	"com.apple.commcenter.xpc",
+	"com.apple.commcenter.coretelephony.xpc",
+	"com.apple.chronoservices",
+	"com.apple.chronod",
+	"com.apple.donotdisturb.service",
+	"com.apple.donotdisturb.service.non-launching",
+	"com.apple.managedconfiguration.profiled.public",
+	"com.apple.locationd.synchronous",
+	"com.apple.locationd.registration",
+	"com.apple.SecureBackupDaemon.concurrent",
+};
+
+static uint64_t absent_count;           /* lookups answered here, for the log */
+
+static bool
+absent_service(const char *name)
+{
+	static __thread uint64_t window_start, in_window;
+	uint64_t now;
+
+	if (name == NULL) {
+		return false;
+	}
+	for (size_t i = 0; i < sizeof(absent_services) / sizeof(absent_services[0]); i++) {
+		if (strcmp(name, absent_services[i]) != 0) {
+			continue;
+		}
+		if (__atomic_fetch_add(&absent_count, 1, __ATOMIC_RELAXED) == 0) {
+			say("redwood: SpringBoard: lookups of services that are not here are answered without launchd (%s first)\n",
+			    name);
+		}
+		if (!pthread_main_np()) {
+			now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+			if (now - window_start > 1000000000ull) {
+				window_start = now;
+				in_window = 0;
+			}
+			if (++in_window > 4) {
+				usleep(100000);
+			}
+		}
+		return true;
+	}
+	return false;
+}
+
+static kern_return_t
+redwood_bootstrap_look_up(mach_port_t bp, const name_t name, mach_port_t *sp)
+{
+	if (absent_service(name)) {
+		return BOOTSTRAP_UNKNOWN_SERVICE;
+	}
+	return bootstrap_look_up(bp, name, sp);
+}
+
+extern kern_return_t bootstrap_look_up2(mach_port_t bp, const name_t name, mach_port_t *sp, pid_t pid, uint64_t flags);
+extern kern_return_t bootstrap_look_up3(mach_port_t bp, const name_t name, mach_port_t *sp, pid_t pid,
+    const uuid_t instance, uint64_t flags);
+
+static kern_return_t
+redwood_bootstrap_look_up2(mach_port_t bp, const name_t name, mach_port_t *sp, pid_t pid, uint64_t flags)
+{
+	if (absent_service(name)) {
+		return BOOTSTRAP_UNKNOWN_SERVICE;
+	}
+	return bootstrap_look_up2(bp, name, sp, pid, flags);
+}
+
+static kern_return_t
+redwood_bootstrap_look_up3(mach_port_t bp, const name_t name, mach_port_t *sp, pid_t pid, const uuid_t instance,
+    uint64_t flags)
+{
+	if (absent_service(name)) {
+		return BOOTSTRAP_UNKNOWN_SERVICE;
+	}
+	return bootstrap_look_up3(bp, name, sp, pid, instance, flags);
+}
+
+__attribute__((used)) static struct {
+	const void *ours, *theirs;
+} absent_interpose[] __attribute__((section("__DATA,__interpose"))) = {
+	{ (const void *)redwood_bootstrap_look_up, (const void *)bootstrap_look_up },
+	{ (const void *)redwood_bootstrap_look_up2, (const void *)bootstrap_look_up2 },
+	{ (const void *)redwood_bootstrap_look_up3, (const void *)bootstrap_look_up3 },
+};
 
 /*
  * Boot-arg touch_lat=1: a line for every turn of SpringBoard's main run loop -- when it woke up (a
