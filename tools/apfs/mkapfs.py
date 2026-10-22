@@ -139,8 +139,10 @@ def read_tree(path, name=''):
 
 
 def apply_manifest(root, manifest):
-    for raw in open(manifest, 'rb'):
-        fields = raw.rstrip(b'\n').split(b'\t')
+    with open(manifest, 'rb') as stream:
+        lines = stream.readlines()
+    for raw in lines:
+        fields = raw.rstrip(b'\r\n').split(b'\t')
         if len(fields) < 4 or not fields[3]:
             continue
         mode, uid, gid = int(fields[0], 8), int(fields[1]), int(fields[2])
@@ -290,7 +292,8 @@ def xfields(fields):
 
 
 class Volume:
-    def __init__(self, index, name, root, compress, when, spool=None, plain=()):
+    def __init__(self, index, name, root, compress, when, spool=None, plain=(), workers=None):
+        self.workers = workers
         self.spool = spool              # where compressed resource forks wait to be written (a file)
         self.plain = tuple(d.strip('/') + '/' for d in plain)   # never compressed below these
         self.index = index
@@ -332,9 +335,15 @@ class Volume:
         forks = iter(())
         if self.compress:
             # compressed by as many processes as there are processors, taken in the files' order
-            pool = concurrent.futures.ProcessPoolExecutor()
-            forks = pool.map(compressed_fork, [n.source for n in files if n.size > 0 and not self.is_plain(n)],
-                             chunksize=16)
+            sources = [n.source for n in files if n.size > 0 and not self.is_plain(n)]
+            pool = None
+            if self.workers == 1:
+                # An in-process path for hosts with little free RAM. It also
+                # avoids Windows spawn overhead for thousands of small files.
+                forks = map(compressed_fork, sources)
+            else:
+                pool = concurrent.futures.ProcessPoolExecutor(max_workers=self.workers)
+                forks = pool.map(compressed_fork, sources, chunksize=16)
         for node in files:
             if node.size == 0:
                 continue
@@ -351,7 +360,7 @@ class Volume:
                     self.decmpfs[node.oid] = (struct.pack('<IIQ', DECMPFS_MAGIC, DECMPFS_ZLIB_RSRC, node.size), sid)
                     continue
             self.data[node.oid] = ('file', node.source, node.size)
-        if self.compress:
+        if self.compress and pool is not None:
             pool.shutdown()
 
     def is_plain(self, node):
@@ -485,7 +494,8 @@ class Volume:
 def compressed_fork(path):
     """How a file is best kept: ('inline', its zlib stream) when that fits the decmpfs attribute,
     ('rsrc', its resource fork) when that takes fewer blocks, else (None, None)."""
-    content = open(path, 'rb').read()
+    with open(path, 'rb') as stream:
+        content = stream.read()
     if len(content) <= PIECE:
         z = zlib.compress(content, 9)
         if 16 + len(z) <= XATTR_MAX_EMBEDDED:
@@ -907,8 +917,11 @@ def main():
     ap.add_argument('--plain', action='append', default=[], help='with -z: never compress what is under this directory')
     ap.add_argument('--time', type=int, default=1683900000, help='every timestamp, in seconds')
     ap.add_argument('--slack', type=int, default=256, help='free blocks to leave (at least)')
+    ap.add_argument('--jobs', type=int, default=None, help='compression workers; 1 uses no subprocesses')
     ap.add_argument('volumes', nargs='+', help='NAME=DIR[,manifest=FILE]')
     args = ap.parse_args()
+    if args.jobs is not None and not 1 <= args.jobs <= 64:
+        ap.error('--jobs must be 1..64')
     vols = []
     spool = open(args.output + '.spool', 'w+b') if args.compress else None
     for i, spec in enumerate(args.volumes):
@@ -919,7 +932,7 @@ def main():
             k, _, val = opt.partition('=')
             if k == 'manifest':
                 apply_manifest(root, val)
-        vols.append(Volume(i, name, root, args.compress, args.time * 1000000000, spool, args.plain))
+        vols.append(Volume(i, name, root, args.compress, args.time * 1000000000, spool, args.plain, args.jobs))
     c = Container(vols, args.slack, os.path.basename(args.output))
     c.layout()
     free = c.write(args.output)
