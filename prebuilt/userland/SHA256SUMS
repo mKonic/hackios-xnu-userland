@@ -1,8 +1,9 @@
 Built 2026-10-20 08:18 (programs of hackios-xnu-userland).
+cpu_test refreshed 2026-10-22; all other binaries retain their build above.
 
 40a44d0c39a9d768b5acf39b78b36f68bf33aa998cacb429655d54dab6616eae  prebuilt/userland/RedwoodAudio
 cab0c58744bd9e4490ef4b9aabfe25758838a35279d1384d382e60e8653c91c3  prebuilt/userland/child
-1a413befd511384052e1962c1394adce20f718e1f2657ce63ab09828ebc4bd1b  prebuilt/userland/cpu_test
+8438ec7d8af0d991b2e08f30726c2163eafd461206e9b408559de9faec141d84  prebuilt/userland/cpu_test
 db564073effc31e7ab1679a7ffe0631ec22c3030ad347c927028f3e53c8583c3  prebuilt/userland/hello
 a8baa9ab38333280369b0824aafaf92c7aa6a85851ff0b2551a4c711dbe59cfd  prebuilt/userland/hello_dyn
 0e2e63e737049a6b17e47f0edd55a8ef5bfe2d9881f4d0966bd2fd5b0c943185  prebuilt/userland/init

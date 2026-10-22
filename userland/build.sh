@@ -10,6 +10,8 @@
 #                                   after init's checks; rc.ios runs a few iOS programs and halts
 #                      JOBS="..."   labels of the stock iOS launchd jobs to load (default: IOS_JOBS)
 #                      REST=1       ... and the rest of them, started only when asked for (see mkjobs.py)
+#                      QUIET=0      restore launchd's own stderr (suppressed by default); screen text is
+#                                   controlled separately by the kernel: omit -v for the iOS interface
 #                      WIFID=0      without wifid, iOS's Wi-Fi daemon, which is in by default (see below)
 #                      OSLOG="..."  labels of the jobs whose os_log output goes to the console ("all": every
 #                                   one of JOBS; default: only the window server, which says little)
@@ -544,11 +546,11 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	fi
 	cp ${RC:-rc.launchd} root/etc/rc
 	cp ${RC_JOBS:-rc.jobs} root/etc/rc.jobs
-	# QUIET=1: launchd's own standard error goes nowhere (src/init.c). It says a few thousand
+	# QUIET=1 (default): launchd's own standard error goes nowhere (src/init.c). It says a few thousand
 	# lines about its own business in the first minutes and pushes everything else out of the
 	# kernel's log; the daemons keep their own standard error on the console all the same.
 	rm -f root/etc/quiet
-	[ -n "$QUIET" ] && : > root/etc/quiet
+	[ "${QUIET:-1}" = 1 ] && : > root/etc/quiet
 	# the jobs the iOS launchd will see (/System/Library/LaunchDaemons is a symlink to this directory).
 	# With FLASHBOOT=1 the root will be Apple's whole volume on the flash, not the part of it that fits in
 	# the system image, so mkjobs.py judges "is this daemon's program there" by the listing of the volume
