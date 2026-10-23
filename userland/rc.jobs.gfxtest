@@ -1,0 +1,5 @@
+# Commands run by the launchd job com.redwood.demo (see com.redwood.demo.plist).
+# The gfxstream OpenGL ES library end to end on the host's GPU (build.sh GL=gfx; QEMU: run-ios.sh
+# QEMU_GPU=1), once the lock screen is up; see src/gfx_test.c.
+/redwood/bin/rwtouch wait 14
+/redwood/bin/gfx_test

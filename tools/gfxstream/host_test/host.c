@@ -1,7 +1,8 @@
 /*
- * A gfxstream host on the Mac, for testing src/gfx without a VM: the Android emulator's
- * libgfxstream_backend.dylib (Android SDK, emulator/lib64) driven through its stream_renderer_*
- * API exactly as crosvm drives it for a virtio-gpu guest. One context, one PIPE_BUFFER resource
+ * A gfxstream host for testing src/gfx without a VM: on the Mac the Android emulator's
+ * libgfxstream_backend.dylib (Android SDK, emulator/lib64), on Linux the distribution's
+ * libgfxstream_backend.so (the one QEMU's rutabaga device loads), driven through its
+ * stream_renderer_* API exactly as crosvm drives it for a virtio-gpu guest. One context, one PIPE_BUFFER resource
  * with a 1 MiB iovec, "pipe:opengles", then transfers: the byte stream of a guest.
  */
 #include <dlfcn.h>
@@ -181,8 +182,12 @@ host_init(uint32_t flags)
 {
 	const char *dir = getenv("GFXSTREAM_LIB");
 	char path[1024];
+#ifdef __APPLE__
 	snprintf(path, sizeof(path), "%s/libgfxstream_backend.dylib",
 	    dir ? dir : "/Users/dylan/Library/Android/sdk/emulator/lib64");
+#else
+	snprintf(path, sizeof(path), "%s/libgfxstream_backend.so.0", dir ? dir : "/usr/lib");
+#endif
 	void *h = dlopen(path, RTLD_NOW);
 	if (h == NULL) {
 		fprintf(stderr, "host: %s\n", dlerror());

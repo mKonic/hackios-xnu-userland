@@ -13,7 +13,9 @@ if [ -z "$SDK" ]; then
 	SDK=${THEOS:-$HOME/theos}/sdks/iPhoneOS16.5.sdk
 	[ -d "$SDK" ] || SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 fi
-CC=${CC:-clang}
+# the kernel's cross compiler where there is one (Linux: xnu-deps/setup.sh; it links with ld64), else Xcode's
+command -v xnu-clang >/dev/null || [ ! -x "$ROOT/xnu-deps/host/bin/xnu-clang" ] || PATH=$ROOT/xnu-deps/host/bin:$PATH
+CC=${CC:-$(command -v xnu-clang || echo clang)}
 CFLAGS="-target arm64-apple-ios16.0 -isysroot $SDK -O2 -Wall -Wno-unused-function"
 D=$("$ROOT/tools/gfxstream/fetch.sh")
 python3 "$ROOT/tools/gfxstream/mkgfxenc.py" "$D/codegen" "$OUT/gfx/gfx_enc.h" "$OUT/gfx/gfx_enc.c" "$OUT/gfx/gfx_api.c" \
