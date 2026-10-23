@@ -62,6 +62,7 @@
 #include <IOKit/IOKitLib.h>
 #include <IOSurface/IOSurfaceRef.h>
 #include <mach/mach_time.h>
+#include <math.h>
 #include <objc/message.h>
 #include <objc/runtime.h>
 #include <stdarg.h>
@@ -123,6 +124,7 @@ typedef GLDEBUGPROC GLDEBUGPROCKHR;
 #define GL_DRAW_FRAMEBUFFER_BINDING     0x8ca6
 #define GL_COLOR_BUFFER_BIT             0x4000
 #define GL_NEAREST                      0x2600
+#define GL_LINEAR                       0x2601
 #define GL_NO_ERROR                     0
 #define GL_TEXTURE_MIN_FILTER           0x2801
 #define GL_LINES                        0x0001
@@ -2255,7 +2257,7 @@ static int census_on;
 static struct census {
 	unsigned draws[CENSUS_KINDS], lately[CENSUS_KINDS];
 	unsigned refused, refused_lately;
-	uint8_t said;                   /* a bit for each kind met */
+	uint16_t said;                  /* a bit for each kind met */
 } census[90];
 static uint64_t census_told;
 
@@ -2304,7 +2306,7 @@ census_draw(struct eagl *e, unsigned function, unsigned kind)
 	if (census[function].said & (1u << kind)) {
 		return;
 	}
-	census[function].said |= (uint8_t)(1u << kind);
+	census[function].said |= (uint16_t)(1u << kind);
 	for (unsigned unit = 0; unit < 4; unit++) {
 		GLint width = 0, height = 0, format = 0;
 
@@ -2738,15 +2740,30 @@ group_uniform(struct eagl *e, const char *name, GLfloat *values)
  * corner, copied into the texture on unit 7 (by the host's GPU: nothing crosses into the guest).
  * The copy keeps the framebuffer's format: BGRA for the display's surfaces, RGBA for CA's own.
  */
+/* The size of the framebuffer being drawn into: its texture's, where that is an IOSurface's, else the viewport's far corner. */
+static void
+framebuffer_size(struct eagl *e, GLint *w, GLint *h)
+{
+	GLint viewport[4] = { 0, 0, 0, 0 };
+
+	for (unsigned i = 0; i < e->image_count; i++) {
+		if (e->colour != 0 && e->images[i].texture == e->colour && e->images[i].width > 0) {
+			*w = e->images[i].width;
+			*h = e->images[i].height;
+			return;
+		}
+	}
+	glGetIntegerv(GL_VIEWPORT, viewport);
+	*w = viewport[0] + viewport[2];
+	*h = viewport[1] + viewport[3];
+}
+
 static void
 vibrant_copy(struct eagl *e)
 {
-	GLint viewport[4] = { 0, 0, 0, 0 };
 	GLint w, h;
 
-	glGetIntegerv(GL_VIEWPORT, viewport);
-	w = viewport[0] + viewport[2];
-	h = viewport[1] + viewport[3];
+	framebuffer_size(e, &w, &h);
 	if (w <= 0 || h <= 0) {
 		return;
 	}
@@ -2941,6 +2958,9 @@ plain_draw_begin(struct eagl *e, GLint enabled[4])
 	 * its own memory -- nothing -- and wrote that over everything: every launch image SpringBoard
 	 * keeps came out black, and with it the zoom that opens an application the first time.
 	 */
+	if ((int)function == trace_function && --trace_function_after == 0) {
+		trace_function_met = 1;
+	}
 	if (!plain_draws || (plain_draws == 1 && e->bound[0] == 0) || reads_what_it_writes(e) ||
 	    (e->colour != 0 && e->colour == e->bound[0])) {
 		census_draw(e, function, CENSUS_NOT_DRAWN);
@@ -2949,9 +2969,6 @@ plain_draw_begin(struct eagl *e, GLint enabled[4])
 	if (function < 90 && !said[function]) {
 		said[function] = 1;
 		say("redwood-gl: a draw with no program is CoreAnimation's function %u (\"%s\")\n", function, census_name(function));
-	}
-	if ((int)function == trace_function && --trace_function_after == 0) {
-		trace_function_met = 1;
 	}
 	e->blended = 0;
 	if (e->bound[0] != 0 && plain_draws != 3 && function < 90 && ((function == FUNCTION_VIBRANT_MATRIX && fetch_offered) ||
