@@ -104,7 +104,7 @@ glGetIntegerv(GLenum pname, GLint *params)
 		*params = (GLint)c->array_buffer;
 	} else if (pname == GL_ELEMENT_ARRAY_BUFFER_BINDING) {
 		*params = (GLint)c->element_buffer;
-	} else {
+	} else if (!gfx_known_integers(c, pname, params)) {
 		gfxe_glGetIntegerv(c, pname, params);
 	}
 }

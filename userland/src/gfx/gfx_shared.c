@@ -243,7 +243,39 @@ glScissor(GLint x, GLint y, GLsizei width, GLsizei height)
 		return;
 	}
 	c->scissor[0] = x, c->scissor[1] = y, c->scissor[2] = width, c->scissor[3] = height;
+	c->scissor_set = 1;
 	gfxe_glScissor(c, x, y, width, height);
+}
+
+/* The capabilities whose state is kept here, a bit each; -1 for the others (asked of the host). */
+static int
+gfx_cap_bit(GLenum cap)
+{
+	static const GLenum caps[] = {
+		0x0BE2, /* GL_BLEND */ 0x0C11, /* GL_SCISSOR_TEST */ 0x0B71, /* GL_DEPTH_TEST */
+		0x0B90, /* GL_STENCIL_TEST */ 0x0B44, /* GL_CULL_FACE */ 0x0BD0, /* GL_DITHER */
+		0x8037, /* GL_POLYGON_OFFSET_FILL */ 0x809E, /* GL_SAMPLE_ALPHA_TO_COVERAGE */
+		0x80A0, /* GL_SAMPLE_COVERAGE */ 0x8C89, /* GL_RASTERIZER_DISCARD */
+		0x8D69, /* GL_PRIMITIVE_RESTART_FIXED_INDEX */
+	};
+
+	for (int i = 0; i < (int)(sizeof(caps) / sizeof(caps[0])); i++) {
+		if (caps[i] == cap) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static void
+gfx_cap_told(struct gfx *c, GLenum cap, int on)
+{
+	int bit = gfx_cap_bit(cap);
+
+	if (bit >= 0) {
+		c->caps_set |= 1u << bit;
+		c->caps_on = on ? c->caps_on | 1u << bit : c->caps_on & ~(1u << bit);
+	}
 }
 
 API void
@@ -256,6 +288,7 @@ glEnable(GLenum cap)
 	if (cap == GL_SCISSOR_TEST) {
 		c->scissor_on = 1;
 	}
+	gfx_cap_told(c, cap, 1);
 	gfxe_glEnable(c, cap);
 }
 
@@ -269,7 +302,89 @@ glDisable(GLenum cap)
 	if (cap == GL_SCISSOR_TEST) {
 		c->scissor_on = 0;
 	}
+	gfx_cap_told(c, cap, 0);
 	gfxe_glDisable(c, cap);
+}
+
+API GLboolean
+glIsEnabled(GLenum cap)
+{
+	struct gfx *c = gfx_current();
+	int bit;
+	if (c == NULL) {
+		return 0;
+	}
+	if ((bit = gfx_cap_bit(cap)) >= 0) {
+		/* (all off in a new context but dithering) */
+		return (GLboolean)(c->caps_set >> bit & 1 ? c->caps_on >> bit & 1 : cap == 0x0BD0);
+	}
+	return gfxe_glIsEnabled(c, cap);
+}
+
+API void
+glClearColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	c->clear_colour[0] = red, c->clear_colour[1] = green, c->clear_colour[2] = blue, c->clear_colour[3] = alpha;
+	c->clear_colour_set = 1;
+	gfxe_glClearColor(c, red, green, blue, alpha);
+}
+
+#define GL_COLOR_CLEAR_VALUE    0x0C22
+API void
+glGetFloatv(GLenum pname, GLfloat *params)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	if (pname == GL_COLOR_CLEAR_VALUE) {
+		/* (black and clear in a new context) */
+		for (int i = 0; i < 4; i++) {
+			params[i] = c->clear_colour_set ? c->clear_colour[i] : 0;
+		}
+		return;
+	}
+	gfxe_glGetFloatv(c, pname, params);
+}
+
+int
+gfx_known_integers(struct gfx *c, GLenum pname, GLint *params)
+{
+	switch (pname) {
+	case 0x0C10: /* GL_SCISSOR_BOX */
+		if (!c->scissor_set) {
+			return 0;               /* (a new context's is its surface's size, known to the host) */
+		}
+		memcpy(params, c->scissor, sizeof(c->scissor));
+		return 1;
+	case 0x0BA2: /* GL_VIEWPORT */
+		if (!c->viewport_set) {
+			return 0;
+		}
+		memcpy(params, c->viewport, sizeof(c->viewport));
+		return 1;
+	case 0x8069: /* GL_TEXTURE_BINDING_2D */
+		*params = (GLint)c->bound_2d[c->active_unit];
+		return 1;
+	case 0x84E0: /* GL_ACTIVE_TEXTURE */
+		*params = (GLint)(GL_TEXTURE0 + c->active_unit);
+		return 1;
+	case 0x8CA6: /* GL_FRAMEBUFFER_BINDING, GL_DRAW_FRAMEBUFFER_BINDING */
+		*params = (GLint)c->draw_fbo;
+		return 1;
+	case 0x8CAA: /* GL_READ_FRAMEBUFFER_BINDING */
+		*params = (GLint)c->read_fbo;
+		return 1;
+	case 0x8B8D: /* GL_CURRENT_PROGRAM */
+		*params = (GLint)c->program;
+		return 1;
+	default:
+		return 0;
+	}
 }
 
 API void
@@ -329,6 +444,9 @@ glBindFramebuffer(GLenum target, GLuint framebuffer)
 	if (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER) {
 		c->draw_fbo = framebuffer;
 	}
+	if (target == GL_FRAMEBUFFER || target == GL_READ_FRAMEBUFFER) {
+		c->read_fbo = framebuffer;
+	}
 	gfxe_glBindFramebuffer(c, target, framebuffer);
 }
 
@@ -357,6 +475,59 @@ glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuin
 	gfxe_glFramebufferTexture2D(c, target, attachment, textarget, texture, level);
 }
 
+/* The colour attachment of the framebuffer drawn into, as glFramebufferTexture2D told it; -1 when not known. */
+static int
+fbo_slot(struct gfx *c, GLuint fbo)
+{
+	for (int i = 0; fbo != 0 && i < GFX_MAX_FBOS; i++) {
+		if (c->fbo_color[i].fbo == fbo) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+API void
+glFramebufferRenderbuffer(GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer)
+{
+	struct gfx *c = gfx_current();
+	int slot;
+	if (c == NULL) {
+		return;
+	}
+	/* (no longer a texture: what is attached is the host's to say) */
+	if (attachment == GL_COLOR_ATTACHMENT0 && target != GL_READ_FRAMEBUFFER && (slot = fbo_slot(c, c->draw_fbo)) >= 0) {
+		c->fbo_color[slot].fbo = c->fbo_color[slot].texture = 0;
+	}
+	gfxe_glFramebufferRenderbuffer(c, target, attachment, renderbuffertarget, renderbuffer);
+}
+
+#define GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE   0x8CD0
+#define GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME   0x8CD1
+API void
+glGetFramebufferAttachmentParameteriv(GLenum target, GLenum attachment, GLenum pname, GLint *params)
+{
+	struct gfx *c = gfx_current();
+	int slot;
+	if (c == NULL) {
+		return;
+	}
+	if (attachment == GL_COLOR_ATTACHMENT0 && target != GL_READ_FRAMEBUFFER &&
+	    (slot = fbo_slot(c, c->draw_fbo)) >= 0) {
+		GLuint texture = c->fbo_color[slot].texture;
+
+		if (pname == GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE) {
+			*params = texture != 0 ? 0x1702 /* GL_TEXTURE */ : 0 /* GL_NONE */;
+			return;
+		}
+		if (pname == GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME && texture != 0) {
+			*params = (GLint)texture;
+			return;
+		}
+	}
+	gfxe_glGetFramebufferAttachmentParameteriv(c, target, attachment, pname, params);
+}
+
 API void
 glDeleteFramebuffers(GLsizei n, const GLuint *framebuffers)
 {
@@ -372,6 +543,9 @@ glDeleteFramebuffers(GLsizei n, const GLuint *framebuffers)
 		}
 		if (c->draw_fbo == framebuffers[i]) {
 			c->draw_fbo = 0;
+		}
+		if (c->read_fbo == framebuffers[i]) {
+			c->read_fbo = 0;
 		}
 	}
 	gfxe_glDeleteFramebuffers(c, n, framebuffers);

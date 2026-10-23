@@ -111,8 +111,17 @@ struct gfx {
 	GLuint active_unit, bound_2d[16], draw_fbo;
 	struct { GLuint fbo, texture; } fbo_color[GFX_MAX_FBOS];
 	/* and where in it: a draw reaches the viewport, cut by the scissor box when that is on */
-	int scissor_on, viewport_set;
+	int scissor_on, viewport_set, scissor_set;
 	GLint scissor[4], viewport[4];
+	/*
+	 * What the caller set, kept so that asking for it back needs no reply from the host (gfx_known()):
+	 * every answer the host gives is a round trip through the kernel and the virtio queue, and the
+	 * window server asked several times a frame (the scissor box, the clear colour, what is enabled)
+	 */
+	GLuint read_fbo;
+	uint32_t caps_set, caps_on;     /* bits of gfx_cap_bit()'s capabilities: told, and on */
+	int clear_colour_set;
+	GLfloat clear_colour[4];
 	struct gfx_shared shared[GFX_MAX_SHARED];
 	uint64_t downloads, download_bytes, uploads, upload_bytes;
 	/* frame ends (gfx_sync_shared): how many, and the microseconds waiting for the host, then copying back */
@@ -120,6 +129,9 @@ struct gfx {
 	uint8_t *scratch;
 	size_t scratch_cap;
 };
+
+/* state the caller set, answered here instead of by the host (gfx_shared.c); 1 when it was */
+int gfx_known_integers(struct gfx *c, GLenum pname, GLint *params);
 
 /* the stream (gfx_core.c) */
 uint8_t *gfx_begin(struct gfx *c, uint32_t op, uint32_t size);  /* space for a packet, header written */

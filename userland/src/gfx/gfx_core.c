@@ -80,6 +80,15 @@ gfx_read(struct gfx *c, void *buf, size_t n)
 	}
 }
 
+/* The current context's answers waited for so far: each a round trip through the kernel to the host. */
+uint64_t
+gfx_round_trips(void)
+{
+	struct gfx *c = gfx_current();
+
+	return c != NULL ? c->round_trips : 0;
+}
+
 void *
 gfx_scratch(struct gfx *c, size_t n)
 {

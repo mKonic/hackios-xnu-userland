@@ -56,7 +56,7 @@
  * fetch_offered), glgroup=0 leaves vibrant layers inside groups as they were (see group_draw_begin()), glprecision=0 leaves the shaders' "lowp" and "mediump" as they are (see all_highp), glenv=NAME=VALUE puts that into the environment for the library to find
  * (its own switches: FD_MESA_DEBUG=sysmem, say), vblur=0 blurs nothing whose radius varies and
  * vblur=2 paints such blurs by their masks instead (see vblur_on), glframes=1 writes a line for
- * every frame (see frame_end()).
+ * every frame (see frame_end()), glstats=1 the statistics every 20 frames and a summary every 200.
  */
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
@@ -77,6 +77,8 @@
 #include <unistd.h>
 
 #include "redwood_gl.h"
+
+uint64_t gfx_round_trips(void);      /* (gfx/gfx_core.c) */
 
 /* ---- OpenGL ES: the types, the few names used here, the library's functions --------------------- */
 
@@ -144,6 +146,7 @@ typedef GLDEBUGPROC GLDEBUGPROCKHR;
 struct eagl;
 static int eagl_tracing;                /* this frame's calls are written down (boot-arg gltrace=FIRST-LAST) */
 static int frame_lines;                 /* boot-arg glframes=1: a line for every frame (see frame_end()) */
+static int stats_lines;                 /* boot-arg glstats=1: a line every 20 frames, a summary every 200 (frame_end()) */
 static int latency_lines;               /* boot-arg touch_lat=1: when every frame began and ended (see frame_end()) */
 static uint64_t slow_calls_us;          /* boot-arg glslow=US: a line for every call that takes longer (eagl_leave()) */
 static uint64_t call_began_us;          /* (when the call in progress began) */
@@ -292,6 +295,8 @@ struct eagl {
 	GLuint backdrop;                /* that copy, on texture unit 7 */
 	GLint backdrop_w, backdrop_h;
 	GLenum backdrop_format;
+	uint64_t trips_said;            /* gfx_round_trips() at the last frame line */
+	GLuint backdrop_proven;         /* the target the copy last took from, in that format (vibrant_copy()) */
 	unsigned feedback_draws;        /* draws that sampled their own target, given a copy of it (feedback_begin) */
 	GLint vibrant_matrix, vibrant_colours, masking_matrix, masking_colours;
 	GLbitfield unclear;             /* a glClear put off until the next draw (clear_now()), and what it was to be made with */
@@ -1263,14 +1268,22 @@ frame_end(struct eagl *e, bool finished)
 	if (e->triangles > e->most_triangles) {
 		e->most_triangles = e->triangles;
 	}
-	if (e->frames <= 40 || e->frames % 20 == 0) {
+	/*
+	 * These go to the console, where every character is a trapped write of the emulated serial port, from the
+	 * window server's display thread: a summary's sixty lines held a frame up. The first frames say how the
+	 * library came up; after that, with glstats=1 only.
+	 */
+	if (e->frames <= 40 || (stats_lines && e->frames % 20 == 0)) {
+		uint64_t trips = gfx_round_trips();
+
 		say("redwood-gl: frame %u: %u GL calls, %u draws, %u triangles, %u clears; %u textures refilled from IOSurfaces "
 		    "(%llu KB); %u picture%s copied out, %u drawn in place; %llu us (%llu handing on, %llu waiting, %llu copying "
-		    "out), %llu before it for the IOSurfaces\n", e->frames, e->calls, e->draws, e->triangles, e->clears, e->uploads,
-		    e->upload_bytes >> 10, copied, copied == 1 ? "" : "s", in_place, after - e->began, e->flushing, waited - before,
-		    after - waited, e->attaching);
+		    "out), %llu before it for the IOSurfaces; %llu answers waited for since the last line\n", e->frames, e->calls,
+		    e->draws, e->triangles, e->clears, e->uploads, e->upload_bytes >> 10, copied, copied == 1 ? "" : "s", in_place,
+		    after - e->began, e->flushing, waited - before, after - waited, e->attaching, trips - e->trips_said);
+		e->trips_said = trips;
 	}
-	if (e->frames == 30 || e->frames % 200 == 0) {
+	if (e->frames == 30 || (stats_lines && e->frames % 200 == 0)) {
 		summary(e);
 	}
 	census_report();
@@ -2911,6 +2924,12 @@ vibrant_copy(struct eagl *e)
 		e->backdrop_format = GL_BGRA;
 	}
 	glBindTexture(GL_TEXTURE_2D, e->backdrop);
+	/* the same target as last time, which took the copy: no asking (each glGetError is a round trip to the host) */
+	if (e->colour != 0 && e->colour == e->backdrop_proven && w == e->backdrop_w && h == e->backdrop_h) {
+		glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, w, h);
+		glActiveTexture(GL_TEXTURE0 + e->unit);
+		return;
+	}
 	for (int attempt = 0; attempt < 2; attempt++) {
 		if (w != e->backdrop_w || h != e->backdrop_h || attempt) {
 			glTexImage2D(GL_TEXTURE_2D, 0, (GLint)e->backdrop_format, w, h, 0, e->backdrop_format, GL_UNSIGNED_BYTE, NULL);
@@ -2923,6 +2942,7 @@ vibrant_copy(struct eagl *e)
 		}
 		glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, w, h);
 		if (glGetError() == GL_NO_ERROR) {
+			e->backdrop_proven = e->colour;
 			break;
 		}
 		/* (a framebuffer of the other kind) */
@@ -3540,6 +3560,9 @@ my_glDeleteTextures(void *context, GLsizei n, const GLuint *textures)
 		image_forget(e, textures[i]);
 		vblur_forget(e, textures[i]);
 		group_forget(e, textures[i]);
+		if (textures[i] == e->backdrop_proven) {
+			e->backdrop_proven = 0;         /* (the name may come back as a texture of another kind) */
+		}
 		if (textures[i] == e->colour) {
 			e->colour = 0;          /* (a texture that is deleted leaves the framebuffer bound) */
 		}
@@ -4443,6 +4466,7 @@ install(void)
 		census_on = strstr(arguments, "glcensus=1") != NULL;
 		errors_always = strstr(arguments, "glerrors=1") != NULL;
 		frame_lines = strstr(arguments, "glframes=1") != NULL;
+		stats_lines = strstr(arguments, "glstats=1") != NULL;
 		latency_lines = strstr(arguments, "touch_lat=1") != NULL;
 		if ((argument = strstr(arguments, "glslow=")) != NULL) {
 			slow_calls_us = strtoull(argument + 7, NULL, 10);
