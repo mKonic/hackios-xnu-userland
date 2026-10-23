@@ -352,14 +352,31 @@ any_client_arrays(struct gfx *c)
 	return 0;
 }
 
+/*
+ * A draw with no program draws nothing in OpenGL ES (its results are undefined), and CoreAnimation
+ * makes such draws over the whole surface every frame (eagl.c, "cst"). It is not sent: a host on
+ * desktop OpenGL draws it all the same, by the fixed function of a compatibility profile (NVIDIA's),
+ * and CoreAnimation's coordinates in pixels then paint a quarter of the screen over.
+ */
+API void
+glUseProgram(GLuint program)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	c->program = program;
+	gfxe_glUseProgram(c, program);
+}
+
 API void
 glDrawArrays(GLenum mode, GLint first, GLsizei count)
 {
 	struct gfx *c = gfx_current();
-	if (c == NULL || count <= 0) {
+	if (c == NULL || count <= 0 || c->program == 0) {
 		return;
 	}
-	gfx_drawing(c);
+	gfx_drawing(c, GFX_DRAW, 0, 0, 0, 0);
 	if (any_client_arrays(c)) {
 		send_arrays(c, first, count);
 		/* the arrays now start at element `first`; buffer-backed ones are rare beside them */
@@ -373,11 +390,11 @@ API void
 glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices)
 {
 	struct gfx *c = gfx_current();
-	if (c == NULL || count <= 0) {
+	if (c == NULL || count <= 0 || c->program == 0) {
 		return;
 	}
 	uint32_t isz = type == GL_UNSIGNED_BYTE ? 1 : type == GL_UNSIGNED_SHORT ? 2 : 4;
-	gfx_drawing(c);
+	gfx_drawing(c, GFX_DRAW, 0, 0, 0, 0);
 	if (c->element_buffer) {
 		if (any_client_arrays(c)) {
 			/* rare: indices in a buffer, vertices in client memory; send every vertex we may need */

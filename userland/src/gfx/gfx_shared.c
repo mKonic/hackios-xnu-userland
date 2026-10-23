@@ -117,18 +117,36 @@ gfx_sync_shared(struct gfx *c)
 	for (int i = 0; i < GFX_MAX_SHARED; i++) {
 		struct gfx_shared *s = &c->shared[i];
 		if (s->res && s->dirty && s->base != NULL) {
+			/*
+			 * Only what was drawn: the rest of the memory may hold what the host's colour buffer does
+			 * not (CoreAnimation redraws what changed and keeps the rest), and it is less to copy.
+			 * Memory row y is texture row y (gfx.h), so the rectangle is the same in both.
+			 */
+			uint32_t x = (uint32_t)s->dx0, y = (uint32_t)s->dy0, w = (uint32_t)(s->dx1 - s->dx0),
+			    h = (uint32_t)(s->dy1 - s->dy0);
 			s->dirty = 0;
-			if (c->t.res_download(c->t.arg, s->res, 0, 0, s->width, s->height, s->base, s->stride) == 0) {
+			if (w && h && c->t.res_download(c->t.arg, s->res, x, y, w, h,
+			    (uint8_t *)s->base + (size_t)y * s->stride + (size_t)x * 4, s->stride) == 0) {
 				c->downloads++;
-				c->download_bytes += (uint64_t)s->width * s->height * 4;
+				c->download_bytes += (uint64_t)w * h * 4;
 			}
 		}
 	}
 }
 
-/* A draw, a clear or a blit is about to land in the bound framebuffer: is its colour shared? */
+static GLint
+clamp(GLint v, GLint lo, GLint hi)
+{
+	return v < lo ? lo : v > hi ? hi : v;
+}
+
+/*
+ * A draw, a clear or a blit is about to land in the bound framebuffer: is its colour shared, and
+ * where does it reach? A draw: the viewport (the whole texture before glViewport); a clear: the
+ * whole; a blit: its destination. The scissor box, when on, cuts all three.
+ */
 void
-gfx_drawing(struct gfx *c)
+gfx_drawing(struct gfx *c, int kind, GLint x0, GLint y0, GLint x1, GLint y1)
 {
 	if (c->draw_fbo == 0) {
 		return;
@@ -136,15 +154,90 @@ gfx_drawing(struct gfx *c)
 	for (int i = 0; i < GFX_MAX_FBOS; i++) {
 		if (c->fbo_color[i].fbo == c->draw_fbo) {
 			struct gfx_shared *s = shared_of_texture(c, c->fbo_color[i].texture);
-			if (s != NULL) {
-				s->dirty = 1;
+			if (s == NULL) {
+				return;
 			}
+			GLint w = (GLint)s->width, h = (GLint)s->height;
+			if (kind == GFX_CLEAR || (kind == GFX_DRAW && !c->viewport_set)) {
+				x0 = 0, y0 = 0, x1 = w, y1 = h;
+			} else if (kind == GFX_DRAW) {
+				x0 = c->viewport[0], y0 = c->viewport[1];
+				x1 = x0 + c->viewport[2], y1 = y0 + c->viewport[3];
+			}
+			if (c->scissor_on) {
+				x0 = x0 > c->scissor[0] ? x0 : c->scissor[0];
+				y0 = y0 > c->scissor[1] ? y0 : c->scissor[1];
+				x1 = x1 < c->scissor[0] + c->scissor[2] ? x1 : c->scissor[0] + c->scissor[2];
+				y1 = y1 < c->scissor[1] + c->scissor[3] ? y1 : c->scissor[1] + c->scissor[3];
+			}
+			x0 = clamp(x0, 0, w), x1 = clamp(x1, 0, w), y0 = clamp(y0, 0, h), y1 = clamp(y1, 0, h);
+			if (x0 >= x1 || y0 >= y1) {
+				return;
+			}
+			if (!s->dirty) {
+				s->dx0 = x0, s->dy0 = y0, s->dx1 = x1, s->dy1 = y1;
+			} else {
+				s->dx0 = x0 < s->dx0 ? x0 : s->dx0, s->dy0 = y0 < s->dy0 ? y0 : s->dy0;
+				s->dx1 = x1 > s->dx1 ? x1 : s->dx1, s->dy1 = y1 > s->dy1 ? y1 : s->dy1;
+			}
+			s->dirty = 1;
 			return;
 		}
 	}
 }
 
 /* ---- the calls that tell -------------------------------------------------------------------- */
+
+#define GL_SCISSOR_TEST         0x0C11
+
+API void
+glViewport(GLint x, GLint y, GLsizei width, GLsizei height)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	c->viewport[0] = x, c->viewport[1] = y, c->viewport[2] = width, c->viewport[3] = height;
+	c->viewport_set = 1;
+	gfxe_glViewport(c, x, y, width, height);
+}
+
+API void
+glScissor(GLint x, GLint y, GLsizei width, GLsizei height)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	c->scissor[0] = x, c->scissor[1] = y, c->scissor[2] = width, c->scissor[3] = height;
+	gfxe_glScissor(c, x, y, width, height);
+}
+
+API void
+glEnable(GLenum cap)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	if (cap == GL_SCISSOR_TEST) {
+		c->scissor_on = 1;
+	}
+	gfxe_glEnable(c, cap);
+}
+
+API void
+glDisable(GLenum cap)
+{
+	struct gfx *c = gfx_current();
+	if (c == NULL) {
+		return;
+	}
+	if (cap == GL_SCISSOR_TEST) {
+		c->scissor_on = 0;
+	}
+	gfxe_glDisable(c, cap);
+}
 
 API void
 glActiveTexture(GLenum texture)
@@ -258,7 +351,7 @@ glClear(GLbitfield mask)
 	if (c == NULL) {
 		return;
 	}
-	gfx_drawing(c);
+	gfx_drawing(c, GFX_CLEAR, 0, 0, 0, 0);
 	gfxe_glClear(c, mask);
 }
 
@@ -270,6 +363,7 @@ glBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX
 	if (c == NULL) {
 		return;
 	}
-	gfx_drawing(c);
+	gfx_drawing(c, GFX_BLIT, dstX0 < dstX1 ? dstX0 : dstX1, dstY0 < dstY1 ? dstY0 : dstY1,
+	    dstX0 < dstX1 ? dstX1 : dstX0, dstY0 < dstY1 ? dstY1 : dstY0);
 	gfxe_glBlitFramebuffer(c, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
 }

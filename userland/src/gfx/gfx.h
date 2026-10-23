@@ -66,6 +66,7 @@ struct gfx_shared {
 	uint32_t res, width, height, stride;
 	void *base;
 	int dirty;                      /* drawn into since the last copy back */
+	int32_t dx0, dy0, dx1, dy1;     /* where: the rows and columns drawn, [x0, x1) x [y0, y1) */
 };
 #define GFX_MAX_SHARED  64
 #define GFX_MAX_FBOS    32
@@ -95,6 +96,7 @@ struct gfx {
 	int host_store_set;              /* host pack/unpack alignment set to 1 */
 
 	/* client state */
+	GLuint program;                 /* glUseProgram's: with none, a draw draws nothing (gfx_gl.c) */
 	struct gfx_attrib attrib[GFX_MAX_ATTRIBS];
 	GLuint array_buffer, element_buffer;
 	GLint unpack_alignment, unpack_row_length, unpack_skip_rows, unpack_skip_pixels;
@@ -104,6 +106,9 @@ struct gfx {
 	/* textures and framebuffers, for knowing when a shared texture is drawn into */
 	GLuint active_unit, bound_2d[16], draw_fbo;
 	struct { GLuint fbo, texture; } fbo_color[GFX_MAX_FBOS];
+	/* and where in it: a draw reaches the viewport, cut by the scissor box when that is on */
+	int scissor_on, viewport_set;
+	GLint scissor[4], viewport[4];
 	struct gfx_shared shared[GFX_MAX_SHARED];
 	uint64_t downloads, download_bytes, uploads, upload_bytes;
 	uint8_t *scratch;
@@ -149,7 +154,11 @@ int gfx_share_texture(struct gfx *c, uint64_t key, void *base, uint32_t width, u
     int upload);
 /* Copy every shared texture drawn into since the last time back into its memory. */
 void gfx_sync_shared(struct gfx *c);
-void gfx_drawing(struct gfx *c);         /* (gfx_gl.c: a draw lands in the bound framebuffer) */
+/* (gfx_gl.c: a draw, clear < 0 / > 0: a clear / a blit to [x0, x1) x [y0, y1), lands in the bound framebuffer) */
+void gfx_drawing(struct gfx *c, int kind, GLint x0, GLint y0, GLint x1, GLint y1);
+#define GFX_DRAW  0
+#define GFX_CLEAR (-1)
+#define GFX_BLIT  1
 void gfx_forget_shared(struct gfx *c, uint64_t key);
 
 #endif

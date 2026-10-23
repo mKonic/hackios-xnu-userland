@@ -332,6 +332,48 @@ main(int argc, char **argv)
 		}
 		printf("GFXTEST display-size frame (10 quads, copied back into a %dx%d surface): %.2f ms\n", DW, DH,
 		    (now_ms() - d0) / 10);
+		/* all of it copied back: the cleared grey (or a quad over it) in every quarter, none left black */
+		int quarters = 0;
+		for (int q = 0; q < 4; q++) {
+			const uint8_t *px = disp + (size_t)(q / 2 ? DH - 2 : 1) * DSTRIDE + (size_t)(q % 2 ? DW - 2 : 1) * 4;
+			quarters += px[3] == 255 && (px[0] | px[1] | px[2]) != 0;
+		}
+		checks++;
+		passed += quarters == 4;
+		printf("GFXTEST display-size frame: %d of 4 corners copied back\n", quarters);
+
+		/* a display-size picture from client memory (an IOSurface CoreAnimation draws from): all of it uploaded? */
+		uint8_t *pic = malloc((size_t)DH * DSTRIDE);
+		for (int y = 0; y < DH; y++) {
+			for (int x = 0; x < DW; x++) {
+				uint8_t *q = pic + (size_t)y * DSTRIDE + (size_t)x * 4;
+				q[0] = 200, q[1] = 100, q[2] = 50, q[3] = 255;
+			}
+		}
+		GLuint pt;
+		glGenTextures(1, &pt);
+		glBindTexture(GL_TEXTURE_2D, pt);
+		int ok3 = gfx_share_texture(c, 4, pic, DW, DH, DSTRIDE, 1);
+		/* read straight back from the texture, a framebuffer around it */
+		GLuint pfbo;
+		glGenFramebuffers(1, &pfbo);
+		glBindFramebuffer(GL_FRAMEBUFFER, pfbo);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, pt, 0);
+		uint8_t corner[4][4];
+		for (int q = 0; q < 4; q++) {
+			glReadPixels(q % 2 ? DW - 2 : 1, q / 2 ? DH - 2 : 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, corner[q]);
+		}
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		quarters = 0;
+		for (int q = 0; q < 4; q++) {
+			quarters += corner[q][0] == 50 && corner[q][1] == 100 && corner[q][2] == 200;  /* RGBA of BGRA 200,100,50 */
+		}
+		checks++;
+		passed += ok3 && quarters == 4;
+		printf("GFXTEST uploaded picture: ok=%d, %d of 4 corners came through (rgba %u,%u,%u %u,%u,%u %u,%u,%u %u,%u,%u)\n",
+		    ok3, quarters, corner[0][0], corner[0][1], corner[0][2], corner[1][0], corner[1][1], corner[1][2], corner[2][0],
+		    corner[2][1], corner[2][2], corner[3][0], corner[3][1], corner[3][2]);
+		free(pic);
 	}
 	printf("GFXTEST checks %d/%d\nGFXTEST-DONE %s\n", passed, checks, passed == checks ? "pass" : "fail");
 	gfx_destroy(c);
