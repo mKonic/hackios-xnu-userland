@@ -27,6 +27,12 @@
  * one costs seconds of the run and a hundred-odd megabytes of flash, and while it runs the
  * storage is read through the loader rather than through this kernel's own driver.
  *
+ * Under QEMU there is no flash: the store is the first virtio disk (/dev/rrvblk0, a file of the
+ * host's; qemu/run-ios.sh QEMU_VAR=1), at the same offsets. A QEMU run is ended by the host rather
+ * than returning to the loader, so boot-arg var_save_after=N saves once, N seconds in, and
+ * var_save_every=N every N seconds: a volume saved once the system has settled is one that later
+ * boots skip the first-boot work with (LaunchServices' registration of every application).
+ *
  * One saver at a time: a write to the store is refused unless the writer holds the claim
  * (kern.redwood.var_busy), so two of them cannot interleave into one slot. Even if they did, the
  * slot being written is never the one holding the newest good archive, and a header is written
@@ -58,6 +64,7 @@
 #define SLOT_BYTES      0x80000000LL            /* 2 GiB a slot, two slots */
 #define SLOTS           2
 #define DEVICE          "/dev/rufs_darwin"
+#define DEVICE_QEMU     "/dev/rrvblk0"          /* no flash under QEMU: the first virtio disk (qemu/run-ios.sh QEMU_VAR=1) */
 #define STATE_AT        8566865920LL            /* darwin's block 2091520: the boot state (common/flash/bundlefmt.py) */
 #define BOOTOK_AFTER    60                      /* seconds of a run that make it a good start */
 #define ROOT            "/private/var"
@@ -114,6 +121,9 @@ struct entry {
 	uint64_t size;                  /* a file's contents, a link's target, a hard link's first name */
 };
 
+/* the store's device: the phone's partition darwin, or the disk QEMU gives in its place */
+static const char *device = DEVICE;
+
 /* ---- the kernel's side of it: the boot-arg, the handshake, the claim ---- */
 
 #define VAR_SAVE_NONE   0
@@ -156,6 +166,31 @@ parse_number(const char *text)
 		value = value * 10 + (*text - '0');
 	}
 	return value;
+}
+
+/* NAME=N among the kernel's arguments: N, or -1 when it is not there */
+static long
+boot_arg_number(const char *name)
+{
+	static char args[1024];
+	size_t len = sizeof(args) - 1, n = strlen(name);
+
+	if (sysctlbyname("kern.bootargs", args, &len, NULL, 0) != 0) {
+		return -1;
+	}
+	args[len < sizeof(args) ? len : sizeof(args) - 1] = 0;
+	for (char *p = args; *p;) {
+		while (*p == ' ') {
+			p++;
+		}
+		if (strncmp(p, name, n) == 0 && p[n] == '=') {
+			return parse_number(p + n + 1);
+		}
+		while (*p && *p != ' ') {
+			p++;
+		}
+	}
+	return -1;
 }
 
 static int
@@ -1257,9 +1292,9 @@ save_once(void)
 	 * device is closed (bsd/dev/redwood_ufs.c, ufs_cclose). A watcher that kept the device open
 	 * would leave iOS reading the flash through the loader for the rest of the run.
 	 */
-	fd = open(DEVICE, O_RDWR, 0);
+	fd = open(device, O_RDWR, 0);
 	if (fd < 0) {
-		printf("var_store: %s: %s\n", DEVICE, strerror(errno));
+		printf("var_store: %s: %s\n", device, strerror(errno));
 		return 0;
 	}
 	ok = claim() && save();
@@ -1297,9 +1332,9 @@ bootok(void)
 	struct boot_state st;
 	int ok;
 
-	fd = open(DEVICE, O_RDWR, 0);
+	fd = open(device, O_RDWR, 0);
 	if (fd < 0) {
-		printf("var_store: bootok: %s: %s\n", DEVICE, strerror(errno));
+		printf("var_store: bootok: %s: %s\n", device, strerror(errno));
 		return 0;
 	}
 	ok = device_read(STATE_AT, block, BLOCK);
@@ -1339,10 +1374,11 @@ watch(int seconds)
 {
 	uint64_t last = 0;
 	int asked = 0;
+	long once;
 
-	fd = open(DEVICE, O_RDWR, 0);
+	fd = open(device, O_RDWR, 0);
 	if (fd < 0) {
-		printf("var_store: %s cannot be written (%s): nothing would be saved\n", DEVICE,
+		printf("var_store: %s cannot be written (%s): nothing would be saved\n", device,
 		    strerror(errno));
 		return 0;
 	}
@@ -1352,8 +1388,9 @@ watch(int seconds)
 		printf("var_store: this kernel does not keep the data volume (%s)\n", strerror(errno));
 		return 0;
 	}
-	printf("var_store: watching: the volume is saved when the run ends%s\n",
-	    seconds > 0 ? ", and in between" : "");
+	once = boot_arg_number("var_save_after");
+	printf("var_store: watching: the volume is saved when the run ends%s%s\n",
+	    seconds > 0 ? ", and in between" : "", once > 0 ? ", and once on its own" : "");
 	{
 		struct timeval tv = { 0, 0 };
 
@@ -1374,6 +1411,11 @@ watch(int seconds)
 			asked = 1;
 		}
 		gettimeofday(&tv, NULL);
+		/* var_save_after=N: one save N seconds into the run, a settled volume for the next boots to start from */
+		if (once > 0 && (uint64_t)tv.tv_sec - started >= (uint64_t)once) {
+			once = 0;
+			printf("var_store: %s\n", save_once() ? "saved, as var_save_after asked" : "the save var_save_after asked came to nothing");
+		}
 		if (asked || (seconds > 0 && (uint64_t)tv.tv_sec - last >= (uint64_t)seconds)) {
 			int ok = save_once();
 
@@ -1441,6 +1483,13 @@ main(int argc, char **argv, char **envp)
 
 	(void)envp;
 	crc_init();
+	{
+		struct stat st;
+
+		if (stat(DEVICE, &st) != 0 && stat(DEVICE_QEMU, &st) == 0) {
+			device = DEVICE_QEMU;
+		}
+	}
 	if (strcmp(what, "bootok") == 0) {
 		return bootok() ? 0 : 1;
 	}
@@ -1463,11 +1512,11 @@ main(int argc, char **argv, char **envp)
 			printf("var_store: not asked to keep the data volume (var_store=1): nothing to watch\n");
 			return 0;
 		}
-		return watch(argc > 2 ? (int)parse_number(argv[2]) : 0) ? 0 : 1;
+		return watch(argc > 2 ? (int)parse_number(argv[2]) : (int)boot_arg_number("var_save_every")) ? 0 : 1;
 	}
-	fd = open(DEVICE, strcmp(what, "load") == 0 || strcmp(what, "show") == 0 ? O_RDONLY : O_RDWR, 0);
+	fd = open(device, strcmp(what, "load") == 0 || strcmp(what, "show") == 0 ? O_RDONLY : O_RDWR, 0);
 	if (fd < 0) {
-		printf("var_store: %s: %s (the kernel takes writes with ufs_write=1)\n", DEVICE,
+		printf("var_store: %s: %s (the kernel takes writes with ufs_write=1)\n", device,
 		    strerror(errno));
 		return 1;
 	}
