@@ -18,3 +18,10 @@ c5957c8e7c72be5e1c9cb89d8d6bdf57ba9d722361d73796324bc08759086fe4  prebuilt/userl
 b98397f3b847efb9c9850753d5c40189c66fad8d43bb05d14ac453bee29a094f  prebuilt/userland/stage0
 143a06695cf54273b39a74a979c690715b7ba171dd408400084eac3ca78db3da  prebuilt/userland/surf_test
 1470e5c46f5d16b65bc360ae8964676a06f7934eab3560ee006cdb9a4914e2e9  prebuilt/userland/svc_test
+merged tree root: (cd hackios-xnu-kernel && sha256sum -c <(grep -E '^[0-9a-f]{64}  userland/obj/' prebuilt/userland/SHA256SUMS)),
+faab40828abe0209165bb3e17420ca4aa75e470d957bf28a29a59f8be4bc965b  userland/obj/libOSMesa.8.dylib
+2950f4d42904b155e1f047535d5ec0f615ec11de9b707a3b2bf032c9fda36aa0  userland/obj/libredwoodair.dylib
+15de976fbd8a796ec455710b6855c0290908a63ac9212077e0e6823fa4a59861  userland/obj/libredwood-gl.dylib
+46888554b78de97b86c826548f9b75ff2f792e5cd6378417b488cbf511941f83  userland/obj/gl_test
+322b49810a206223ba30ea710c8b8e7bf4e67d5012864e4602f40bedaac626e5  userland/obj/u2f_test
+04921bb7ffdd1cbd8820f3fb9d6720fa25b2685263b065caa4bc4c8ea7b42f10  userland/obj/air_run
