@@ -4155,7 +4155,12 @@ install(void)
 			}
 		}
 		share_surfaces = strstr(arguments, "glcopy=1") == NULL;
-		blit_targets = strstr(arguments, "glblit=0") == NULL;
+		/*
+		 * gfxstream: drawn into the surface's own texture instead, and the library copies back only
+		 * what was drawn; a blit into a texture that is a colour buffer is refused there (INVALID_OPERATION)
+		 */
+		blit_targets = strstr(arguments, "glblit=0") == NULL &&
+		    (strncmp(redwood_gl_library(), "gfx", 3) != 0 || strstr(arguments, "glblit=1") != NULL);
 		sync_frames = strstr(arguments, "glsync=0") == NULL;
 		if (strstr(arguments, "glwait=0") != NULL || (strstr(arguments, "glwait=1") == NULL && display_waits())) {
 			wait_for_frames = 0;
