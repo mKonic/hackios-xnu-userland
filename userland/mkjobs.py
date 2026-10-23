@@ -325,7 +325,7 @@ if rest:
         for env_name in ('RWA_PACKED16',):
             if os.environ.get(env_name):
                 job.setdefault('EnvironmentVariables', {})[env_name] = os.environ[env_name]
-        if label in oslog:
+        if 'all' in oslog or label in oslog:
             job.setdefault('EnvironmentVariables', {})['OS_ACTIVITY_DT_MODE'] = 'YES'
         with open(f'{dest}/{name}', 'wb') as f:
             plistlib.dump(job, f, fmt=plistlib.FMT_BINARY)

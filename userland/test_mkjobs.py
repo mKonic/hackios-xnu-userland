@@ -12,7 +12,7 @@ RECIPE = ROOT / 'userland/mkjobs.py'
 
 
 class JobsTests(unittest.TestCase):
-    def run_recipe(self, packed):
+    def run_recipe(self, packed, oslog=None):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / 'root'
             jobs = root / 'System/Library/LaunchDaemons'
@@ -32,6 +32,9 @@ class JobsTests(unittest.TestCase):
             env = os.environ.copy()
             env.pop('RWA_PACKED16', None)
             env.pop('ALLOW', None)
+            env.pop('OSLOG', None)
+            if oslog:
+                env['OSLOG'] = oslog
             if packed:
                 env['RWA_PACKED16'] = '1'
             subprocess.run([sys.executable, str(RECIPE), '--rest',
@@ -46,12 +49,20 @@ class JobsTests(unittest.TestCase):
                         self.assertNotIn(key, job)
                 self.assertEqual(job.get('EnvironmentVariables', {}).get('RWA_PACKED16'),
                                  '1' if packed else None)
+                self.assertEqual(job.get('EnvironmentVariables', {}).get('OS_ACTIVITY_DT_MODE'),
+                                 'YES' if oslog == 'all' or label == oslog else None)
 
     def test_rest_files_without_experiment(self):
         self.run_recipe(False)
 
     def test_rest_files_with_experiment(self):
         self.run_recipe(True)
+
+    def test_all_logging_includes_on_demand_jobs_and_angels(self):
+        self.run_recipe(False, 'all')
+
+    def test_selected_logging_does_not_enable_other_jobs(self):
+        self.run_recipe(False, 'com.test.beta')
 
 
 if __name__ == '__main__':
