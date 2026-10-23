@@ -752,7 +752,8 @@ if [ -f $IOS/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
 		mv sysroot/private/var/staged_system_apps/* sysroot/Applications/
 		rm -rf sysroot/private/var
 	fi
-	mv sysroot/sbin/launchd sysroot/sbin/launchd.ios
+	# iOS's launchd, with 60 s instead of 5 for an app extension to check in (launchd_watchdog.py says why)
+	python3 launchd_watchdog.py $IOS/rootfs/sbin/launchd sysroot/sbin/launchd.ios && rm sysroot/sbin/launchd
 	cp obj/stage0 sysroot/sbin/launchd
 	# the audio DSP's firmware, the phone's own from ../fw-audio (never in the repository), where the kernel reads
 	# it once the root is mounted (bsd/dev/redwood_adsp.c, adsp=1): 20 MB that do not fit beside GL=1 in the small image
