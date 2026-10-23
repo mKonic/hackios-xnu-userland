@@ -264,6 +264,7 @@ struct eagl {
 	GLuint backdrop;                /* that copy, on texture unit 7 */
 	GLint backdrop_w, backdrop_h;
 	GLenum backdrop_format;
+	unsigned feedback_draws;        /* draws that sampled their own target, given a copy of it (feedback_begin) */
 	GLint vibrant_matrix, vibrant_colours, masking_matrix, masking_colours;
 	GLbitfield unclear;             /* a glClear put off until the next draw (clear_now()), and what it was to be made with */
 	GLint unclear_box[4];
@@ -2793,6 +2794,60 @@ vibrant_copy(struct eagl *e)
 	glActiveTexture(GL_TEXTURE0 + e->unit);
 }
 
+/*
+ * CoreAnimation draws into a texture while sampling that same texture (a material's backdrop pass, Safari's
+ * toolbar: program 11 into framebuffer 33, texture 146 also on unit 1). On Apple's GPUs, and on tilers, that
+ * reads the pixels as they were; in OpenGL it is a feedback loop with no defined result, and NVIDIA's (through
+ * gfxstream) gives blocks of garbage -- the black and white squares under Safari's toolbar. With
+ * copy_feedback, such a draw samples a copy of the target made just before it (vibrant_copy(), on the GPU)
+ * instead, and the target is bound back after.
+ */
+static int copy_feedback;
+
+static unsigned
+feedback_begin(struct eagl *e)
+{
+	unsigned units = 0;
+
+	if (!copy_feedback || e->program == 0 || e->colour == 0) {
+		return 0;
+	}
+	for (unsigned u = 0; u < 8; u++) {
+		units |= (unsigned)(e->bound[u] == e->colour) << u;
+	}
+	if (units == 0) {
+		return 0;
+	}
+	vibrant_copy(e);
+	for (unsigned u = 0; u < 8; u++) {
+		if (units >> u & 1) {
+			glActiveTexture(GL_TEXTURE0 + u);
+			glBindTexture(GL_TEXTURE_2D, e->backdrop);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		}
+	}
+	glActiveTexture(GL_TEXTURE0 + e->unit);
+	if (e->feedback_draws++ == 0) {
+		say("redwood-gl: a draw samples the texture it draws into (program %u, units %#x): it gets a copy\n", e->program, units);
+	}
+	return units;
+}
+
+static void
+feedback_end(struct eagl *e, unsigned units)
+{
+	for (unsigned u = 0; units != 0 && u < 8; u++) {
+		if (units >> u & 1) {
+			glActiveTexture(GL_TEXTURE0 + u);
+			glBindTexture(GL_TEXTURE_2D, e->colour);
+		}
+	}
+	if (units != 0) {
+		glActiveTexture(GL_TEXTURE0 + e->unit);
+	}
+}
+
 static int
 group_draw_begin(struct eagl *e, GLint enabled[4])
 {
@@ -3224,8 +3279,12 @@ my_glDrawArrays(void *context, GLenum mode, GLint first, GLsizei count)
 		glDrawArrays(mode, first, count);
 		group_draw_end(e, enabled);
 	} else {
+		unsigned feedback;
+
 		plain = plain_draw_begin(e, enabled);
+		feedback = feedback_begin(e);
 		glDrawArrays(mode, first, count);
+		feedback_end(e, feedback);
 		if (plain) {
 			plain_draw_end(e, enabled);
 		}
@@ -3264,8 +3323,12 @@ my_glDrawElements(void *context, GLenum mode, GLsizei count, GLenum type, const 
 		glDrawElements(mode, count, type, indices);
 		group_draw_end(e, enabled);
 	} else {
+		unsigned feedback;
+
 		plain = plain_draw_begin(e, enabled);
+		feedback = feedback_begin(e);
 		glDrawElements(mode, count, type, indices);
+		feedback_end(e, feedback);
 		if (plain) {
 			plain_draw_end(e, enabled);
 		}
@@ -4265,6 +4328,8 @@ install(void)
 		 * gfxstream: drawn into the surface's own texture instead, and the library copies back only
 		 * what was drawn; a blit into a texture that is a colour buffer is refused there (INVALID_OPERATION)
 		 */
+		/* gfxstream (NVIDIA behind it): a draw that samples its own target gets a copy (feedback_begin); glfeedback=0 not */
+		copy_feedback = strncmp(redwood_gl_library(), "gfx", 3) == 0 && strstr(arguments, "glfeedback=0") == NULL;
 		blit_targets = strstr(arguments, "glblit=0") == NULL &&
 		    (strncmp(redwood_gl_library(), "gfx", 3) != 0 || strstr(arguments, "glblit=1") != NULL);
 		sync_frames = strstr(arguments, "glsync=0") == NULL;
