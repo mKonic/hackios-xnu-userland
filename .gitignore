@@ -28,6 +28,7 @@ __pycache__/
 !/tools/metal/
 !/tools/gfxstream/
 !/tools/mk-mesa.sh
+!/tools/mesa-stamp.sh
 !/tools/mk-jb.sh
 !/tools/jb-preinstall.py
 !/tools/font_trim.py
