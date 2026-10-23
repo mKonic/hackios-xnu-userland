@@ -225,6 +225,7 @@ struct group_texture {
 	GLfloat colours[20];            /* ... and that layer's colour matrix */
 };
 static int group_vibrant_on = 1;        /* boot-arg glgroup=0 */
+static int ycbcr_offered = 1;           /* boot-arg glycbcr=0: CA makes YCbCr surfaces' colour itself (see my_glGetString()) */
 static unsigned group_covered, group_laid, group_flattened;    /* (glframes=1) this frame's */
 
 /* A texture that stands for an IOSurface. */
@@ -3531,22 +3532,37 @@ my_glGetString(void *context, GLenum name)
 	EAGL_ENTER(e, 0x3b0);
 	/* 0x8a1e is no name of OpenGL ES's; iOS's library answers it (the constructor of CA::OGL::GLESContext asks) */
 	string = name == 0x8a1e ? (const GLubyte *)"" : glGetString(name);
-	if (name == GL_EXTENSIONS && string != NULL && !fetch_offered) {
-		static char without[8192];      /* (the list less that extension: see fetch_offered) */
+	if (name == GL_EXTENSIONS && string != NULL) {
+		/*
+		 * The list less framebuffer fetch unless it is offered (see fetch_offered), and with one of
+		 * Apple's own: GL_APPLE_texture_ycbcr_basic_formats is what CoreAnimation asks for before it
+		 * shows a YCbCr IOSurface (a photo's, a video's) as two textures, Y and CbCr, which its shader
+		 * makes colour of. Without it CA makes the colour itself, on the processor, for every frame
+		 * the surface is in -- the window server's biggest cost while the home screen moved. The
+		 * planes come to -texImageIOSurface:...plane: as one- and two-component textures, which
+		 * surface_to_texture() fills like any other.
+		 */
+		static char listed[8192];
+		static const char ycbcr[] = "GL_APPLE_texture_ycbcr_basic_formats";
 		size_t used = 0;
 
 		for (const char *word = (const char *)string; *word != 0;) {
 			size_t length = strcspn(word, " ");
 
-			if (strncmp(word, "GL_EXT_shader_framebuffer_fetch", 31) != 0 && used + length + 2 < sizeof(without)) {
-				memcpy(without + used, word, length);
+			if ((fetch_offered || strncmp(word, "GL_EXT_shader_framebuffer_fetch", 31) != 0) &&
+			    used + length + 2 < sizeof(listed)) {
+				memcpy(listed + used, word, length);
 				used += length;
-				without[used++] = ' ';
+				listed[used++] = ' ';
 			}
 			word += length + (word[length] == ' ');
 		}
-		without[used] = 0;
-		string = (const GLubyte *)without;
+		if (ycbcr_offered && used + sizeof(ycbcr) < sizeof(listed)) {
+			memcpy(listed + used, ycbcr, sizeof(ycbcr));
+		} else {
+			listed[used] = 0;
+		}
+		string = (const GLubyte *)listed;
 	}
 	/* The list of extensions is longer than a line of the log, and it was being cut at 900
 	   characters -- which is where one looks to see whether the driver takes a compressed
@@ -4388,6 +4404,7 @@ install(void)
 		}
 		fetch_offered = strstr(arguments, "glfetch=0") == NULL;
 		group_vibrant_on = strstr(arguments, "glgroup=0") == NULL;
+		ycbcr_offered = strstr(arguments, "glycbcr=0") == NULL;
 		if ((argument = strstr(arguments, "gltrace_place=")) != NULL) {
 			char *end = (char *)argument + 14;
 
