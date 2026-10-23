@@ -398,7 +398,7 @@ static int blit_targets = 1;
  * here in any case; glwait=0: nowhere, to see what the waiting costs (and frames half drawn).
  */
 static int wait_for_frames = 1;
-static int sync_frames = 1;             /* boot-arg glsync=0 (a test): a frame's end does not push what Mesa holds back (frame_end()) */
+static int sync_frames = 1;             /* a frame's end pushes what Mesa holds back (frame_end()); glsync=0 not, gfxstream not unless glsync=1 */
 /*
  * EXT_shader_framebuffer_fetch -- a fragment shader reads the pixel it is about to write -- is
  * what CoreAnimation draws a number of things with where the library offers it: the shadows
@@ -4514,7 +4514,13 @@ install(void)
 		copy_feedback = strncmp(redwood_gl_library(), "gfx", 3) == 0 && strstr(arguments, "glfeedback=0") == NULL;
 		blit_targets = strstr(arguments, "glblit=0") == NULL &&
 		    (strncmp(redwood_gl_library(), "gfx", 3) != 0 || strstr(arguments, "glblit=1") != NULL);
-		sync_frames = strstr(arguments, "glsync=0") == NULL;
+		/*
+		 * The fence is for Mesa's freedreno, which may hold a small submission back. gfxstream's library sends all
+		 * there is at every flush, and there a fence is two answers waited for (one to make it, one to ask it),
+		 * every frame: glsync=1 to have it all the same.
+		 */
+		sync_frames = strstr(arguments, "glsync=1") != NULL ||
+		    (strstr(arguments, "glsync=0") == NULL && strncmp(redwood_gl_library(), "gfx", 3) != 0);
 		if (strstr(arguments, "glwait=0") != NULL || (strstr(arguments, "glwait=1") == NULL && display_waits())) {
 			wait_for_frames = 0;
 		}
