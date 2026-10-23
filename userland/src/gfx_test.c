@@ -332,6 +332,47 @@ main(int argc, char **argv)
 		}
 		printf("GFXTEST display-size frame (10 quads, copied back into a %dx%d surface): %.2f ms\n", DW, DH,
 		    (now_ms() - d0) / 10);
+		/*
+		 * Sampled after being drawn into: the display-size target as a texture (CoreAnimation reads
+		 * the display's surface back this way for what is behind a blur), drawn into another
+		 * framebuffer; its middle must be what the target's middle is.
+		 */
+		{
+			GLuint st3, sfbo3;
+			uint8_t got[4] = { 0 };
+			glGenTextures(1, &st3);
+			glBindTexture(GL_TEXTURE_2D, st3);
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+			glGenFramebuffers(1, &sfbo3);
+			glBindFramebuffer(GL_FRAMEBUFFER, sfbo3);
+			glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, st3, 0);
+			glViewport(0, 0, 64, 64);
+			glDisable(GL_BLEND);
+			glClearColor(0, 0, 0, 1);
+			glClear(GL_COLOR_BUFFER_BIT);
+			/* the target cleared to pure red first, so that what it holds is known exactly */
+			glBindFramebuffer(GL_FRAMEBUFFER, dfbo);
+			glViewport(0, 0, DW, DH);
+			glClearColor(1, 0, 0, 1);
+			glClear(GL_COLOR_BUFFER_BIT);
+			glFinish();
+			glBindFramebuffer(GL_FRAMEBUFFER, sfbo3);
+			glViewport(0, 0, 64, 64);
+			glBindTexture(GL_TEXTURE_2D, dt);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+			draw(prog, color_loc, 1.0f);
+			glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, got);
+			glFinish();
+			const uint8_t *mid = disp + (size_t)(DH / 2) * DSTRIDE + (size_t)(DW / 2) * 4;   /* BGRA */
+			int same = abs(got[0] - mid[2]) < 8 && abs(got[1] - mid[1]) < 8 && abs(got[2] - mid[0]) < 8;
+			checks++;
+			passed += same;
+			printf("GFXTEST target sampled after drawing: rgb %u,%u,%u, its memory %u,%u,%u: %s\n", got[0], got[1], got[2],
+			    mid[2], mid[1], mid[0], same ? "the same" : "NOT the same");
+			glBindFramebuffer(GL_FRAMEBUFFER, dfbo);
+			glViewport(0, 0, DW, DH);
+		}
 		/* all of it copied back: the cleared grey (or a quad over it) in every quarter, none left black */
 		int quarters = 0;
 		for (int q = 0; q < 4; q++) {

@@ -123,6 +123,8 @@ typedef GLDEBUGPROC GLDEBUGPROCKHR;
 #define GL_DRAW_FRAMEBUFFER_BINDING     0x8ca6
 #define GL_COLOR_BUFFER_BIT             0x4000
 #define GL_NEAREST                      0x2600
+#define GL_NO_ERROR                     0
+#define GL_TEXTURE_MIN_FILTER           0x2801
 #define GL_LINES                        0x0001
 #define GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE 0x8cd0
 #define GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME 0x8cd1
@@ -256,6 +258,10 @@ struct eagl {
 	GLuint vibrant, masking;        /* two more: what a colour matrix does to what is behind, and to the layer */
 	int blended;                    /* blending is off for such a draw, to be put back after it */
 	bool no_vibrant;                /* the first of the two could not be made */
+	bool vibrant_copies;            /* ... so it is vibrant_copy_fragment's: it reads a copy of the framebuffer */
+	GLuint backdrop;                /* that copy, on texture unit 7 */
+	GLint backdrop_w, backdrop_h;
+	GLenum backdrop_format;
 	GLint vibrant_matrix, vibrant_colours, masking_matrix, masking_colours;
 	GLbitfield unclear;             /* a glClear put off until the next draw (clear_now()), and what it was to be made with */
 	GLint unclear_box[4];
@@ -335,6 +341,7 @@ static __thread struct eagl *current;
 static struct eagl *contexts[8];
 static uint32_t slot_calls[SLOTS];
 static int check_errors = 1;            /* ask the library for an error after every call (the first frames) */
+static int errors_always;               /* boot-arg glerrors=1: and after the first 600 too */
 static int share_surfaces = 1;          /* boot-arg glcopy=1: 0 */
 /*
  * A frame is not drawn into its surface's memory but into a texture of the library's own, and the
@@ -1127,7 +1134,7 @@ frame_end(struct eagl *e, bool finished)
 		summary(e);
 	}
 	census_report();
-	if (e->frames == 600 && e->errors == 0) {
+	if (e->frames == 600 && e->errors == 0 && !errors_always) {
 		check_errors = 0;
 	}
 	e->last_draws = e->draws;
@@ -1724,6 +1731,28 @@ static const char vibrant_fragment[] =
     "  s.rgb = clamp(s.rgb * s.a, 0., 1.);\n"
     "  result = mix(behind, s, layer.a);\n"
     "}\n";
+/*
+ * The same without EXT_shader_framebuffer_fetch (NVIDIA's OpenGL ES through gfxstream has none):
+ * what is behind is read from a copy of the framebuffer made just before the draw (vibrant_copy()),
+ * at the pixel the fragment is for. Without it Control Center's glyphs were blank circles.
+ */
+static const char vibrant_copy_fragment[] =
+    "#version 300 es\n"
+    "uniform lowp sampler2D texture0;\n"
+    "uniform highp sampler2D backdrop;\n"
+    "uniform mediump vec4 colours[5];\n"
+    "in lowp vec4 color;\n"
+    "in highp vec2 texcoord;\n"
+    "out highp vec4 result;\n"
+    "void main() {\n"
+    "  mediump vec4 layer = color * texture(texture0, texcoord / vec2(textureSize(texture0, 0)));\n"
+    "  mediump vec4 behind = texelFetch(backdrop, ivec2(gl_FragCoord.xy), 0), s = behind;\n"
+    "  s.rgb = s.rgb / max(s.a, .005);\n"
+    "  s = s.r * colours[0] + s.g * colours[1] + s.b * colours[2] + s.a * colours[3] + colours[4];\n"
+    "  s.a = clamp(s.a, 0., 1.);\n"
+    "  s.rgb = clamp(s.rgb * s.a, 0., 1.);\n"
+    "  result = mix(behind, s, layer.a);\n"
+    "}\n";
 static const char masking_fragment[] =
     "#version 300 es\n"
     "uniform lowp sampler2D texture0;\n"
@@ -1816,6 +1845,7 @@ static GLfloat function_values[90][20];
 static uint8_t function_given[90];
 
 /* From inject.c, at every GLContext::function_uniform(): the numbers a function is given, which no shader of CoreAnimation's takes. */
+__attribute__((visibility("default")))   /* (dlsym'd by inject.c; mk-gfx.sh hides everything else) */
 void
 redwood_gl_function_values(void *context, unsigned function, unsigned index, size_t components, size_t count, const float *values)
 {
@@ -2242,6 +2272,7 @@ census_name(unsigned function)
 /* From inject.c: CoreAnimation asked whether the function it is about to use exists, and was told no. */
 static uint16_t frame_refused[90], frame_noprog[90][CENSUS_KINDS];     /* (glframes=1) this frame's, by function */
 
+__attribute__((visibility("default")))   /* (dlsym'd by inject.c; mk-gfx.sh hides everything else) */
 void
 redwood_gl_function_refused(unsigned function)
 {
@@ -2702,6 +2733,49 @@ group_uniform(struct eagl *e, const char *name, GLfloat *values)
  * Before a draw: is it one of the above, and if so, set up for it (the draw itself is CoreAnimation's,
  * with its arrays). Returns 0 for a draw left as it is, 1 for one of ours (group_draw_end() after it).
  */
+/*
+ * What is behind a vibrant draw, for vibrant_copy_fragment: the framebuffer up to the viewport's far
+ * corner, copied into the texture on unit 7 (by the host's GPU: nothing crosses into the guest).
+ * The copy keeps the framebuffer's format: BGRA for the display's surfaces, RGBA for CA's own.
+ */
+static void
+vibrant_copy(struct eagl *e)
+{
+	GLint viewport[4] = { 0, 0, 0, 0 };
+	GLint w, h;
+
+	glGetIntegerv(GL_VIEWPORT, viewport);
+	w = viewport[0] + viewport[2];
+	h = viewport[1] + viewport[3];
+	if (w <= 0 || h <= 0) {
+		return;
+	}
+	glActiveTexture(GL_TEXTURE0 + 7);
+	if (e->backdrop == 0) {
+		glGenTextures(1, &e->backdrop);
+		e->backdrop_format = GL_BGRA;
+	}
+	glBindTexture(GL_TEXTURE_2D, e->backdrop);
+	for (int attempt = 0; attempt < 2; attempt++) {
+		if (w != e->backdrop_w || h != e->backdrop_h || attempt) {
+			glTexImage2D(GL_TEXTURE_2D, 0, (GLint)e->backdrop_format, w, h, 0, e->backdrop_format, GL_UNSIGNED_BYTE, NULL);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+			e->backdrop_w = w;
+			e->backdrop_h = h;
+		}
+		while (glGetError() != GL_NO_ERROR) {
+		}
+		glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, w, h);
+		if (glGetError() == GL_NO_ERROR) {
+			break;
+		}
+		/* (a framebuffer of the other kind) */
+		e->backdrop_format = e->backdrop_format == GL_BGRA ? GL_RGBA : GL_BGRA;
+	}
+	glActiveTexture(GL_TEXTURE0 + e->unit);
+}
+
 static int
 group_draw_begin(struct eagl *e, GLint enabled[4])
 {
@@ -2897,9 +2971,23 @@ plain_draw_begin(struct eagl *e, GLint enabled[4])
 			e->masking_matrix = glGetUniformLocation(e->masking, "vertex_matrix");
 			e->masking_colours = glGetUniformLocation(e->masking, "colours");
 		}
-		if (vibrant && e->no_vibrant) {
+		if (vibrant && e->no_vibrant && !e->vibrant_copies) {
+			GLint good = 0;
+
+			e->vibrant = plain_program(vibrant_copy_fragment, "a colour matrix over a copy of what is behind");
+			glGetProgramiv(e->vibrant, GL_LINK_STATUS, &good);
+			e->vibrant_copies = good;
+			e->vibrant_matrix = glGetUniformLocation(e->vibrant, "vertex_matrix");
+			e->vibrant_colours = glGetUniformLocation(e->vibrant, "colours");
+			glUseProgram(e->vibrant);
+			glUniform1i(glGetUniformLocation(e->vibrant, "backdrop"), 7);
+		}
+		if (vibrant && e->no_vibrant && !e->vibrant_copies) {
 			census_draw(e, function, CENSUS_NOT_DRAWN);     /* better nothing than the mask as a picture */
 			return false;
+		}
+		if (vibrant && e->vibrant_copies) {
+			vibrant_copy(e);
 		}
 		census_draw(e, function, vibrant ? CENSUS_VIBRANT : CENSUS_MASKING);
 		program = vibrant ? e->vibrant : e->masking;
@@ -4115,6 +4203,7 @@ install(void)
 		}
 		all_shaders = strstr(arguments, "glshaders=1") != NULL;
 		census_on = strstr(arguments, "glcensus=1") != NULL;
+		errors_always = strstr(arguments, "glerrors=1") != NULL;
 		frame_lines = strstr(arguments, "glframes=1") != NULL;
 		latency_lines = strstr(arguments, "touch_lat=1") != NULL;
 		if ((argument = strstr(arguments, "glslow=")) != NULL) {
