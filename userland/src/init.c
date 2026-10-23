@@ -820,6 +820,54 @@ read_whole(const char *path, char *buf, size_t size)
 	return (ssize_t)got;
 }
 
+/*
+ * Boot-arg var_hfs=DEV (QEMU: qemu/run-ios.sh QEMU_VAR=hfs): /private/var is the HFS+ volume on
+ * /dev/DEV (the kernel carries HFS+, bsd/hfs), a disk of its own that keeps everything as it is
+ * written -- what a phone's data volume does -- instead of a memory filesystem that var_store fills
+ * from a snapshot. The first boot lays the skeleton down on it and leaves VAR_HFS_MARK; later boots
+ * find the volume as the last one left it. 1: mounted and in use; 0: not asked, or not mountable
+ * (then the memory filesystem, as ever).
+ */
+#define VAR_HFS_MARK "/private/var/.hackios-volume"
+static int var_on_hfs, var_hfs_fresh;
+
+struct hfs_args {                       /* struct hfs_mount_args (bsd/hfs/core/hfs_mount.h), user side */
+	char *fspec;
+	uint32_t uid;                   /* uid_t */
+	uint32_t gid;                   /* gid_t */
+	uint16_t mask;                  /* mode_t */
+	uint32_t encoding;
+	struct {
+		int minuteswest, dsttime;
+	} timezone;
+	int flags, journal_tbuffer_size, journal_flags, journal_disable;
+};
+
+static int
+mount_var_hfs(void)
+{
+	const char *name = boot_arg("var_hfs");
+	struct hfs_args args;
+	struct stat st;
+	char spec[64];
+
+	if (name == NULL || strlen(name) > 40) {
+		return 0;
+	}
+	memset(&args, 0, sizeof(args));
+	strcpy(spec, join("/dev/", name, ""));
+	args.fspec = spec;
+	args.mask = 0777;
+	if (mount("hfs", "/private/var", 0, &args) != 0) {
+		printf("  mount HFS+ %s on /private/var: %s; a memory filesystem instead\n", spec, strerror(errno));
+		return 0;
+	}
+	var_on_hfs = 1;
+	var_hfs_fresh = stat(VAR_HFS_MARK, &st) != 0;
+	printf("  /private/var is HFS+ on %s%s\n", spec, var_hfs_fresh ? ", new: laying it out" : ", as the last boot left it");
+	return 1;
+}
+
 static void
 mount_writable(void)
 {
@@ -831,11 +879,15 @@ mount_writable(void)
 	struct stat st;
 
 	printf("\n-- writable filesystem --\n");
-	ok = mount("ramfs", "/private/var", 0, NULL) == 0;
+	if (mount_var_hfs() && !var_hfs_fresh) {
+		check(1, "mount the data volume (HFS+) on /private/var");
+		return;
+	}
+	ok = var_on_hfs || mount("ramfs", "/private/var", 0, NULL) == 0;
 	if (!ok) {
 		printf("  mount: %s\n", strerror(errno));
 	}
-	check(ok, "mount a memory filesystem on /private/var");
+	check(ok, var_on_hfs ? "mount the data volume (HFS+) on /private/var" : "mount a memory filesystem on /private/var");
 
 	/* the directories of the data volume, as listed in the template that ships with iOS (ios165/mkvarskel.py) */
 	read_whole(in_image("/etc/var.skel"), skeleton, sizeof(skeleton));
@@ -882,6 +934,11 @@ mount_writable(void)
 	}
 	printf("  %d directories, %d files\n", made, files);
 	check(ok && made > 50, "create the directories of the data volume");
+	if (ok && var_on_hfs) {
+		fd = open(VAR_HFS_MARK, O_WRONLY | O_CREAT, 0644);
+		fsync(fd);
+		close(fd);
+	}
 
 	/*
 	 * and the package manager's prefix, when the image was built with one (tools/mk-jb.sh): /jb of
@@ -983,8 +1040,8 @@ restore_var(void)
 	int status = 0;
 	pid_t pid;
 
-	if (wanted == NULL || strcmp(wanted, "1") != 0) {
-		return;
+	if (wanted == NULL || strcmp(wanted, "1") != 0 || var_on_hfs) {
+		return;         /* (an HFS+ data volume keeps what was written to it itself) */
 	}
 	printf("\n-- the data volume of the last boot --\n");
 	argv[0] = (char *)in_image("/bin/var_store");
