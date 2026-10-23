@@ -1,12 +1,4 @@
 # Commands run by the launchd job com.redwood.demo (see com.redwood.demo.plist).
-/redwood/bin/hello_dyn started by launchd
-/redwood/bin/svc_test
-/redwood/bin/surf_test
-/bin/ps -A
-/redwood/bin/mg_test
-# the processors: how many, and -- once the system has settled -- whether they work at the same time
-/redwood/bin/cpu_test
-/redwood/bin/cpu_test 240 &
 # The network, when the kernel has one (QEMU: run-ios.sh QEMU_NET=1, virtio_net=1): en0 configured by configd's
 # IPConfiguration over DHCP and stored as the primary service, which is what tells iOS it is connected (Safari
 # said "not connected to the Internet" without it). Without en0 it says "no such interface"; in the background,
