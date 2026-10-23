@@ -53,6 +53,8 @@ struct gfx_transport {
 	    void *dst, uint32_t stride);
 	/* Optional: the resource is the memory `key` names (an IOSurface): the display may show it as it is */
 	int (*res_name)(void *arg, uint32_t res, uint64_t key);
+	/* Optional: 1 when the display has shown the resource as it is (then it needs no copy back) */
+	int (*res_shown)(void *arg, uint32_t res);
 	/*
 	 * The render thread's first word (the client flags) has been sent already: /dev/vgpu3d sends it
 	 * when it connects the pipe. A second one would be read as the start of a packet, and the
@@ -113,6 +115,8 @@ struct gfx {
 	GLint scissor[4], viewport[4];
 	struct gfx_shared shared[GFX_MAX_SHARED];
 	uint64_t downloads, download_bytes, uploads, upload_bytes;
+	/* frame ends (gfx_sync_shared): how many, and the microseconds waiting for the host, then copying back */
+	uint64_t syncs, sync_wait_us, sync_copy_us, sync_copy_bytes;
 	uint8_t *scratch;
 	size_t scratch_cap;
 };

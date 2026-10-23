@@ -5,6 +5,8 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 #include "gfx_enc.h"
 
@@ -16,6 +18,14 @@
 #define GL_DRAW_FRAMEBUFFER     0x8CA9
 #define GL_READ_FRAMEBUFFER     0x8CA8
 #define GL_COLOR_ATTACHMENT0    0x8CE0
+
+static uint64_t
+now_us(void)
+{
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
+}
 
 static struct gfx_shared *
 shared_of_key(struct gfx *c, uint64_t key)
@@ -116,9 +126,16 @@ gfx_sync_shared(struct gfx *c)
 		return;
 	}
 	/* the host must have drawn everything before the colour buffers are read */
+	uint64_t t0 = now_us();
 	gfxe_glFinishRoundTrip(c);
+	uint64_t t1 = now_us(), bytes = c->download_bytes;
 	for (int i = 0; i < GFX_MAX_SHARED; i++) {
 		struct gfx_shared *s = &c->shared[i];
+		if (s->res && s->dirty && s->base != NULL && c->t.res_shown != NULL && c->t.res_shown(c->t.arg, s->res)) {
+			/* on the screen as the colour buffer it is: its memory is fetched by the display if ever needed */
+			s->dirty = 0;
+			continue;
+		}
 		if (s->res && s->dirty && s->base != NULL) {
 			/*
 			 * Only what was drawn: the rest of the memory may hold what the host's colour buffer does
@@ -134,6 +151,19 @@ gfx_sync_shared(struct gfx *c)
 				c->download_bytes += (uint64_t)w * h * 4;
 			}
 		}
+	}
+	/* every hundred frames, where their ends went (stderr: the console under backboardd) */
+	c->syncs++;
+	c->sync_wait_us += t1 - t0;
+	c->sync_copy_us += now_us() - t1;
+	c->sync_copy_bytes += c->download_bytes - bytes;
+	if (c->syncs % 100 == 0) {
+		char line[160];
+		int n = snprintf(line, sizeof(line), "gfx: a frame's end: %llu us waiting for the host, %llu us copying %llu KB back\n",
+		    (unsigned long long)(c->sync_wait_us / 100), (unsigned long long)(c->sync_copy_us / 100),
+		    (unsigned long long)(c->sync_copy_bytes / 100 >> 10));
+		write(2, line, n > 0 && n < (int)sizeof(line) ? (size_t)n : 0);
+		c->sync_wait_us = c->sync_copy_us = c->sync_copy_bytes = 0;
 	}
 }
 

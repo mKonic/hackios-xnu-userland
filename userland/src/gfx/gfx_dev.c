@@ -30,6 +30,7 @@ struct vgpu3d_ioc_name {
 	uint32_t res, sid;
 };
 #define VGPU3D_IOC_NAME         _IOW('G', 5, struct vgpu3d_ioc_name)
+#define VGPU3D_IOC_SHOWN        _IOWR('G', 6, uint32_t)
 
 static int
 dev_write(void *arg, const void *buf, size_t n)
@@ -109,6 +110,12 @@ dev_res_name(void *arg, uint32_t res, uint64_t key)
 	return ioctl((int)(intptr_t)arg, VGPU3D_IOC_NAME, &n) ? errno : 0;
 }
 
+static int
+dev_res_shown(void *arg, uint32_t res)
+{
+	return ioctl((int)(intptr_t)arg, VGPU3D_IOC_SHOWN, &res) == 0 && res == 1;
+}
+
 int
 gfx_dev_open(struct gfx_transport *t)
 {
@@ -125,6 +132,7 @@ gfx_dev_open(struct gfx_transport *t)
 	t->res_upload = dev_res_upload;
 	t->res_download = dev_res_download;
 	t->res_name = dev_res_name;
+	t->res_shown = dev_res_shown;
 	t->flags_sent = 1;              /* the kernel's vgpu3d_open sends it */
 	return 0;
 }
