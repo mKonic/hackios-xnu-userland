@@ -160,6 +160,31 @@ static long eagl_missing(void *context, unsigned offset);
 #include "eagl_gen.h"
 #undef EAGL_GEN_DECLARATIONS
 
+/*
+ * Where say() writes: the standard error, while that is the console. The window server's points
+ * elsewhere by the time it draws (its first lines arrive, the library's never did), so then the
+ * console itself.
+ */
+static int
+say_fd(void)
+{
+	static int fd = -1;
+	struct stat err, console;
+
+	if (fd < 0) {
+		fd = 2;
+		if (stat("/dev/console", &console) == 0 && (fstat(2, &err) != 0 || err.st_rdev != console.st_rdev ||
+		    !S_ISCHR(err.st_mode))) {
+			int opened = open("/dev/console", O_WRONLY | O_NOCTTY | O_CLOEXEC);
+
+			if (opened >= 0) {
+				fd = opened;
+			}
+		}
+	}
+	return fd;
+}
+
 static void
 say(const char *format, ...)
 {
@@ -173,7 +198,7 @@ say(const char *format, ...)
 	if (n > (int)sizeof(line) - 1) {
 		n = sizeof(line) - 1;
 	}
-	write(2, line, (size_t)n);
+	write(say_fd(), line, (size_t)n);
 }
 
 static void
@@ -186,7 +211,7 @@ eagl_trace(const char *format, ...)
 	va_start(ap, format);
 	n = vsnprintf(line + 4, sizeof(line) - 4, format, ap) + 4;
 	va_end(ap);
-	write(2, line, n > (int)sizeof(line) - 1 ? sizeof(line) - 1 : (size_t)n);
+	write(say_fd(), line, n > (int)sizeof(line) - 1 ? sizeof(line) - 1 : (size_t)n);
 }
 
 static void
@@ -225,7 +250,7 @@ struct group_texture {
 	GLfloat colours[20];            /* ... and that layer's colour matrix */
 };
 static int group_vibrant_on = 1;        /* boot-arg glgroup=0 */
-static int ycbcr_offered = 1;           /* boot-arg glycbcr=0: CA makes YCbCr surfaces' colour itself (see my_glGetString()) */
+static int ycbcr_offered;               /* boot-arg glycbcr=1: YCbCr surfaces as plane textures (see my_glGetString()) */
 static unsigned group_covered, group_laid, group_flattened;    /* (glframes=1) this frame's */
 
 /* A texture that stands for an IOSurface. */
@@ -3534,13 +3559,13 @@ my_glGetString(void *context, GLenum name)
 	string = name == 0x8a1e ? (const GLubyte *)"" : glGetString(name);
 	if (name == GL_EXTENSIONS && string != NULL) {
 		/*
-		 * The list less framebuffer fetch unless it is offered (see fetch_offered), and with one of
-		 * Apple's own: GL_APPLE_texture_ycbcr_basic_formats is what CoreAnimation asks for before it
-		 * shows a YCbCr IOSurface (a photo's, a video's) as two textures, Y and CbCr, which its shader
-		 * makes colour of. Without it CA makes the colour itself, on the processor, for every frame
-		 * the surface is in -- the window server's biggest cost while the home screen moved. The
-		 * planes come to -texImageIOSurface:...plane: as one- and two-component textures, which
-		 * surface_to_texture() fills like any other.
+		 * The list less framebuffer fetch unless it is offered (see fetch_offered); with boot-arg
+		 * glycbcr=1, also one of Apple's own: GL_APPLE_texture_ycbcr_basic_formats is what CoreAnimation
+		 * asks for before it shows a YCbCr IOSurface (a video's) as two textures, Y and CbCr, which its
+		 * shader makes colour of, instead of converting it on the processor. The planes would come to
+		 * -texImageIOSurface:...plane: as one- and two-component textures, which surface_to_texture()
+		 * fills like any other. Off until a video has been seen through it: nothing on the home screen
+		 * is YCbCr, so it is untested.
 		 */
 		static char listed[8192];
 		static const char ycbcr[] = "GL_APPLE_texture_ycbcr_basic_formats";
@@ -4404,7 +4429,7 @@ install(void)
 		}
 		fetch_offered = strstr(arguments, "glfetch=0") == NULL;
 		group_vibrant_on = strstr(arguments, "glgroup=0") == NULL;
-		ycbcr_offered = strstr(arguments, "glycbcr=0") == NULL;
+		ycbcr_offered = strstr(arguments, "glycbcr=1") != NULL;
 		if ((argument = strstr(arguments, "gltrace_place=")) != NULL) {
 			char *end = (char *)argument + 14;
 
