@@ -71,7 +71,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/sysctl.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 #include "redwood_gl.h"
@@ -977,6 +979,102 @@ show_texture(struct eagl *e, struct image *image)
 	free(pixels);
 }
 
+/*
+ * Boot-arg glsnap_at=SECONDS: the first frame that long after the window server started is written out whole
+ * into /private/var/tmp/glsnap (QEMU: the HFS+ data volume, which the host can mount read-only afterwards):
+ * every texture a draw of the frame samples, once, as t<id>-<w>x<h>.rgba, and each draw's target after it, as
+ * d<n>-<w>x<h>.rgba, with index.txt saying which draw was which. For seeing the stages of a material's blur.
+ */
+static uint64_t snap_at;
+static int snap_on;                     /* 1: this frame is being written out */
+static int snap_index = -1;
+static unsigned snap_draws;
+static GLuint snap_fbo, snap_done[256];
+static unsigned snap_done_count;
+
+#define GL_FRAMEBUFFER_BINDING_         0x8ca6
+#define GL_TEXTURE_HEIGHT_              0x1001
+
+static void
+snap_say(const char *format, ...)
+{
+	char line[512];
+	va_list ap;
+	int n;
+
+	va_start(ap, format);
+	n = vsnprintf(line, sizeof(line), format, ap);
+	va_end(ap);
+	if (snap_index >= 0 && n > 0) {
+		write(snap_index, line, (size_t)(n < (int)sizeof(line) ? n : (int)sizeof(line) - 1));
+	}
+}
+
+/* Texture `texture` (its level 0) into a file named after `what`; 0 when it could not be read. */
+static int
+snap_texture(struct eagl *e, GLuint texture, const char *what)
+{
+	GLint fb = 0, w = 0, h = 0;
+	char path[128];
+	uint8_t *pixels;
+	int fd;
+
+	glBindTexture(GL_TEXTURE_2D, texture);
+	glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
+	glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT_, &h);
+	glBindTexture(GL_TEXTURE_2D, e->bound[e->unit]);
+	if (w <= 0 || h <= 0 || w > 4096 || h > 4096 || (pixels = malloc((size_t)w * (size_t)h * 4)) == NULL) {
+		return 0;
+	}
+	glGetIntegerv(GL_FRAMEBUFFER_BINDING_, &fb);
+	if (snap_fbo == 0) {
+		glGenFramebuffers(1, &snap_fbo);
+	}
+	glBindFramebuffer(GL_FRAMEBUFFER, snap_fbo);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+	glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+	glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)fb);
+	snprintf(path, sizeof(path), "/private/var/tmp/glsnap/%s-%dx%d.rgba", what, w, h);
+	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd >= 0) {
+		write(fd, pixels, (size_t)w * (size_t)h * 4);
+		close(fd);
+	}
+	free(pixels);
+	return fd >= 0;
+}
+
+/* After a draw of the frame being written out: what it sampled (the first time), and its target as it now is. */
+static void
+snap_after_draw(struct eagl *e)
+{
+	char name[32];
+
+	if (!snap_on) {
+		return;
+	}
+	snap_draws++;
+	snap_say("draw %u: program %u, framebuffer %u (texture %u), textures %u %u %u %u\n", snap_draws, e->program,
+	    e->framebuffer, e->colour, e->bound[0], e->bound[1], e->bound[2], e->bound[3]);
+	for (unsigned u = 0; u < 4; u++) {
+		bool done = e->bound[u] == 0 || e->bound[u] == e->colour;
+
+		for (unsigned i = 0; !done && i < snap_done_count; i++) {
+			done = snap_done[i] == e->bound[u];
+		}
+		if (!done && snap_done_count < 256) {
+			snap_done[snap_done_count++] = e->bound[u];
+			snprintf(name, sizeof(name), "t%u", e->bound[u]);
+			snap_texture(e, e->bound[u], name);
+		}
+	}
+	if (e->colour != 0) {
+		snprintf(name, sizeof(name), "d%03u-t%u", snap_draws, e->colour);
+		snap_texture(e, e->colour, name);
+	}
+}
+
 /* Before the first drawing of a frame: the textures whose IOSurfaces somebody has written to since. */
 static void
 frame_begin(struct eagl *e)
@@ -996,6 +1094,13 @@ frame_begin(struct eagl *e)
 		trace_draws = 0;
 		trace_function_met = 0;
 		trace_function = -1;
+	}
+	if (snap_at != 0 && e->began >= snap_at) {
+		snap_at = 0;
+		mkdir("/private/var/tmp/glsnap", 0755);
+		snap_index = open("/private/var/tmp/glsnap/index.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		snap_on = snap_index >= 0;
+		say("redwood-gl: frame %u written out into /private/var/tmp/glsnap%s\n", e->frames + 1, snap_on ? "" : ": could not");
 	}
 	trace_placing = 0;
 	if (trace_left != 0) {
@@ -1086,6 +1191,12 @@ frame_end(struct eagl *e, bool finished)
 	after = now_us();
 	e->in_frame = false;
 	e->frames++;
+	if (snap_on) {
+		snap_on = 0;
+		close(snap_index);
+		snap_index = -1;
+		say("redwood-gl: glsnap: %u draws, %u textures written\n", snap_draws, snap_done_count);
+	}
 	if (latency_lines) {
 		/* "tl: g FRAME began US ended US DRAWS": microseconds of mach_absolute_time (tools/latency.py) */
 		say("tl: g %u began %llu ended %llu %u\n", e->frames, e->began, after, e->draws);
@@ -3285,6 +3396,7 @@ my_glDrawArrays(void *context, GLenum mode, GLint first, GLsizei count)
 		feedback = feedback_begin(e);
 		glDrawArrays(mode, first, count);
 		feedback_end(e, feedback);
+		snap_after_draw(e);
 		if (plain) {
 			plain_draw_end(e, enabled);
 		}
@@ -3329,6 +3441,7 @@ my_glDrawElements(void *context, GLenum mode, GLsizei count, GLenum type, const 
 		feedback = feedback_begin(e);
 		glDrawElements(mode, count, type, indices);
 		feedback_end(e, feedback);
+		snap_after_draw(e);
 		if (plain) {
 			plain_draw_end(e, enabled);
 		}
@@ -4248,6 +4361,9 @@ install(void)
 			if (*argument == '-') {
 				trace_last = (unsigned)strtoul(argument + 1, NULL, 10);
 			}
+		}
+		if ((argument = strstr(arguments, "glsnap_at=")) != NULL) {
+			snap_at = now_us() + strtoull(argument + 10, NULL, 10) * 1000000;
 		}
 		if ((argument = strstr(arguments, "gltrace_at=")) != NULL) {
 			trace_at = now_us() + strtoull(argument + 11, NULL, 10) * 1000000;
