@@ -70,6 +70,9 @@ gfx_share_texture(struct gfx *c, uint64_t key, void *base, uint32_t width, uint3
 		s->width = width;
 		s->height = height;
 		upload = 1;
+		if (c->t.res_name != NULL) {
+			c->t.res_name(c->t.arg, s->res, key);  /* (a kernel without it says ENOTTY: copied as before) */
+		}
 	}
 	/* a texture is shared with one memory at a time */
 	struct gfx_shared *old = shared_of_texture(c, texture);

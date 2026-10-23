@@ -51,6 +51,8 @@ struct gfx_transport {
 	    const void *src, uint32_t stride);
 	int (*res_download)(void *arg, uint32_t res, uint32_t x, uint32_t y, uint32_t w, uint32_t h,
 	    void *dst, uint32_t stride);
+	/* Optional: the resource is the memory `key` names (an IOSurface): the display may show it as it is */
+	int (*res_name)(void *arg, uint32_t res, uint64_t key);
 	/*
 	 * The render thread's first word (the client flags) has been sent already: /dev/vgpu3d sends it
 	 * when it connects the pipe. A second one would be read as the start of a packet, and the
