@@ -4521,7 +4521,14 @@ install(void)
 		 */
 		sync_frames = strstr(arguments, "glsync=1") != NULL ||
 		    (strstr(arguments, "glsync=0") == NULL && strncmp(redwood_gl_library(), "gfx", 3) != 0);
-		if (strstr(arguments, "glwait=0") != NULL || (strstr(arguments, "glwait=1") == NULL && display_waits())) {
+		/*
+		 * The display's driver waits for the submissions of Mesa's freedreno only. gfxstream's host
+		 * decodes what was sent at its own pace, and QEMU reads the colour buffer when the display is
+		 * told of it: a frame not waited for here came out with parts of it not drawn yet (the right
+		 * half of the home screen's icons, at times while they moved). Swipes: 40-42 fps against 42.
+		 */
+		if (strstr(arguments, "glwait=0") != NULL || (strstr(arguments, "glwait=1") == NULL && display_waits() &&
+		    strncmp(redwood_gl_library(), "gfx", 3) != 0)) {
 			wait_for_frames = 0;
 		}
 		say("redwood-gl: a frame is waited for %s\n", wait_for_frames ? "here, before it is handed to the display" :
