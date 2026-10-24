@@ -1,3 +1,3 @@
 # Commands run by the launchd job com.redwood.demo when the image is built with RC_JOBS=rc.jobs.bench: the emulator
 # measured, once the system has settled (src/objc_bench.c; "objc_bench: N ms" on the console).
-/redwood/bin/objc_bench 90 3 &
+/redwood/bin/objc_bench 60 30 &
