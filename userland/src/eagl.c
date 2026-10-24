@@ -78,7 +78,8 @@
 
 #include "redwood_gl.h"
 
-uint64_t gfx_round_trips(void);      /* (gfx/gfx_core.c) */
+/* gfx/gfx_core.c's on gfxstream; the Mesa library (the phone) has none to wait for */
+__attribute__((weak)) uint64_t gfx_round_trips(void) { return 0; }
 
 /* ---- OpenGL ES: the types, the few names used here, the library's functions --------------------- */
 
