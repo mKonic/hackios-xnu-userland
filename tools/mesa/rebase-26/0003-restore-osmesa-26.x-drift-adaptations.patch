@@ -513,7 +513,7 @@ diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci
 diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci ref-26.2.5/mesa-26.2.5/src/gallium/drivers/freedreno/a6xx/fd6_draw.cc mesa-26.2.5/src/gallium/drivers/freedreno/a6xx/fd6_draw.cc
 --- a/src/gallium/drivers/freedreno/a6xx/fd6_draw.cc	2026-10-23 14:36:12
 +++ b/src/gallium/drivers/freedreno/a6xx/fd6_draw.cc	2026-10-23 14:12:27
-@@ -488,6 +488,21 @@
+@@ -488,6 +488,27 @@
         DRAW == DRAW_INDIRECT_OP_INDIRECT_COUNT)
        ctx->batch->barrier |= FD6_WAIT_FOR_ME;
  
@@ -527,9 +527,15 @@ diff -ruN -x *.rej -x *.orig -x Oops* -x __pycache__ -x air -x redwood-drm -x ci
 +    * triangle of each such quad was wrong, the second right.  A CCU colour
 +    * flush before the draw mends it, and so does a UCHE invalidate alone;
 +    * the first such draw gets both, as a framebuffer barrier would give.
++    * On a8xx (a830, annibale) the read also goes through CCHE: with only
++    * those two, the first triangle still showed pixels of the other GMEM
++    * bin, until CCHE was invalidated as well.
 +    */
-+   if (unlikely(emit.fs->fb_read) && !ctx->batch->prev_draw_read_fb)
++   if (unlikely(emit.fs->fb_read) && !ctx->batch->prev_draw_read_fb) {
 +      ctx->batch->barrier |= FD6_FLUSH_CCU_COLOR | FD6_INVALIDATE_CACHE;
++      if (CHIP >= A8XX)
++         ctx->batch->barrier |= FD6_INVALIDATE_CCHE;
++   }
 +   ctx->batch->prev_draw_read_fb = emit.fs->fb_read;
 +
     fd6_barrier_flush<CHIP>(cs, ctx->batch);
