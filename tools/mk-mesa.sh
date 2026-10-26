@@ -23,6 +23,13 @@
 #   libredwoodair.dylib  the same path as a library (tools/mesa/air/air_metal.h), install name
 #                        /redwood/lib/libredwoodair.dylib, which is what userland's Metal driver
 #                        links against to compile a function Metal hands it
+# and with TURNIP=1 (26.x only, REBASE=26), Mesa's Vulkan driver for the Adreno instead of all of the above:
+#   libvulkan_freedreno.dylib
+#                        Turnip on its msm backend, through tools/mesa/redwood-drm like freedreno
+#                        (tools/mesa/rebase-26/0004-turnip-msm-darwin.patch), install name
+#                        /redwood/lib/libvulkan_freedreno.dylib; loaded as an ICD (vk_icdGetInstanceProcAddr)
+#   tu_probe             tools/mesa/turnip-probe: enumerates the GPU, creates a device, and checks a buffer
+#                        fill and copy, a compute shader and a drawn triangle by reading them back
 # Needs on this machine: bison, flex, python3 with venv (Mako and a pinned Meson are installed into a
 # private environment), llvm-ar, and the iOS cross toolchain -- $THEOS/toolchain/linux/iphone (cctools'
 # ld64 and install_name_tool, x86_64 binaries that run under qemu-user or Rosetta on an arm64 host) plus
@@ -147,6 +154,38 @@ endian = 'little'
 [properties]
 needs_exe_wrapper = true
 INI
+
+if [ "${TURNIP:-}" = 1 ]; then
+	[ "$REBASE" = 26 ] || { echo "mk-mesa.sh: TURNIP=1 needs REBASE=26 (the patch is tools/mesa/rebase-26/0004-turnip-msm-darwin.patch)"; exit 1; }
+	command -v glslangValidator >/dev/null || { echo "mk-mesa.sh: TURNIP=1 needs glslangValidator (apt-get install glslang-tools)"; exit 1; }
+	# Darwin has no pthread_condattr_setclock; Turnip's only caller asks for CLOCK_MONOTONIC on a
+	# condition variable it waits on with relative timeouts. b_lundef=false: the library leaves Mesa's
+	# entry points this build omits to dyld (0004's meson.build); a global -undefined dynamic_lookup
+	# would instead make meson's function checks pass for functions iOS lacks, secure_getenv first.
+	[ -f build-turnip/build.ninja ] || meson setup build-turnip mesa-$VERSION --cross-file cross.ini --wrap-mode=nofallback \
+		--prefix=/redwood --libdir=lib --buildtype=release -Db_ndebug=true \
+		-Dplatforms= -Dgallium-drivers= -Dfreedreno-kmds=msm -Dvulkan-drivers=freedreno -Dglx=disabled -Degl=disabled -Dgbm=disabled \
+		-Dosmesa=false -Dllvm=disabled -Dgles1=disabled -Dgles2=disabled -Dopengl=false \
+		-Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled -Dshader-cache=disabled -Dvalgrind=disabled \
+		-Dlibunwind=disabled -Dglvnd=disabled -Dvideo-codecs= -Dtools= -Dgallium-va=disabled \
+		-Dlmsensors=disabled -Dbuild-tests=false '-Dcpp_args=-Dpthread_condattr_setclock(a,b)=0' -Db_lundef=false \
+		> meson-setup-turnip.log
+	ninja -C build-turnip src/freedreno/vulkan/libvulkan_freedreno.dylib > ninja-turnip.log
+	llvm-strip -x -o out/libvulkan_freedreno.dylib build-turnip/src/freedreno/vulkan/libvulkan_freedreno.dylib
+	"$INTOOL" -id /redwood/lib/libvulkan_freedreno.dylib out/libvulkan_freedreno.dylib
+	[ "$(dylib_id out/libvulkan_freedreno.dylib)" = /redwood/lib/libvulkan_freedreno.dylib ] || {
+		echo "mk-mesa.sh: libvulkan_freedreno.dylib does not carry the install name /redwood/lib/libvulkan_freedreno.dylib"; exit 1; }
+	llvm-nm -gU out/libvulkan_freedreno.dylib | grep -q ' _vk_icdGetInstanceProcAddr$' || {
+		echo "mk-mesa.sh: libvulkan_freedreno.dylib does not export vk_icdGetInstanceProcAddr"; exit 1; }
+	mkdir -p turnip-probe/shaders
+	for shader in fill.comp tri.vert tri.frag; do
+		glslangValidator -V --vn "spv_${shader/./_}" -o "turnip-probe/shaders/${shader/./_}.h" "$ROOT/tools/mesa/turnip-probe/$shader" > /dev/null
+	done
+	"$CC" -arch arm64 -isysroot "$SDK" -O1 -Wall -Imesa-$VERSION/include -Iturnip-probe \
+		-o out/tu_probe "$ROOT/tools/mesa/turnip-probe/tu_probe.c"
+	echo "mk-mesa.sh: Mesa $VERSION (Turnip): $B/out/libvulkan_freedreno.dylib, $(stat -c %s out/libvulkan_freedreno.dylib) bytes; $B/out/tu_probe"
+	exit 0
+fi
 DRIVERS=${DRIVERS:-softpipe,freedreno}
 BUILD=build-${DRIVERS//,/-}
 # 26.x dropped the gallium state trackers vdpau and xa, so those options only exist up to 25.x;
