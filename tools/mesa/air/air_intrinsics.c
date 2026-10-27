@@ -457,7 +457,12 @@ math_op(struct air_ctx *c, const struct air_inst *in, const struct air_name *n, 
    } else if (!strcmp(op, "fast_ldexp") || !strcmp(op, "ldexp")) {
       r = nir_ldexp(&c->b, a[0], nir_i2i32(&c->b, a[1]));
    } else if (!strcmp(op, "fast_fma") || !strcmp(op, "fma") || !strcmp(op, "mad")) {
-      r = nir_ffma(&c->b, a[0], a[1], a[2]);
+      /* AFN permits an approximate intrinsic result. Keep strict FMA fused;
+       * contract alone only permits fusion of separate multiply/add ops. */
+      bool approximate = in->flags & (AIR_FMF_UNSAFE_ALGEBRA | AIR_FMF_AFN);
+      air_builder_set_exact(&c->b, !approximate);
+      r = approximate ? nir_ffma_weak(&c->b, a[0], a[1], a[2])
+                      : nir_ffma(&c->b, a[0], a[1], a[2]);
    } else if (!strcmp(op, "abs")) {
       r = is_float ? nir_fabs(&c->b, a[0]) : nir_iabs(&c->b, a[0]);
    } else if (!strcmp(op, "abs_diff")) {
