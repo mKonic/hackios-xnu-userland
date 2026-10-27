@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <time.h>
 #include <stdlib.h>
 #include <string.h>
@@ -108,11 +109,8 @@ drmDevicesEqual(drmDevicePtr a, drmDevicePtr b)
 }
 
 static int
-call(unsigned number, void *data, size_t size)
+error_from_return(kern_return_t result)
 {
-	size_t returned = size;
-	kern_return_t result = IOConnectCallStructMethod(connection, number, data, size, data, &returned);
-
 	switch (result) {
 	case 0:
 		return 0;
@@ -131,6 +129,24 @@ call(unsigned number, void *data, size_t size)
 	default:
 		return EIO;
 	}
+}
+
+static int
+call_with_return(unsigned number, void *data, size_t size, kern_return_t *raw_result)
+{
+	size_t returned = size;
+	kern_return_t result = IOConnectCallStructMethod(connection, number, data, size, data, &returned);
+
+	if (raw_result != NULL) {
+		*raw_result = result;
+	}
+	return error_from_return(result);
+}
+
+static int
+call(unsigned number, void *data, size_t size)
+{
+	return call_with_return(number, data, size, NULL);
 }
 
 int
@@ -253,10 +269,16 @@ int
 drmPrimeFDToHandle(int fd, int surface, uint32_t *handle)
 {
 	struct redwood_drm_surface request = { .surface = (uint32_t)surface };
-	int error = call(REDWOOD_GPU_SURFACE, &request, sizeof(request));
+	kern_return_t raw_result = KERN_SUCCESS;
+	int error = call_with_return(REDWOOD_GPU_SURFACE, &request, sizeof(request), &raw_result);
 
 	(void)fd;
 	if (error != 0) {
+		static unsigned reports;
+		if (__sync_fetch_and_add(&reports, 1) < 8) {
+			fprintf(stderr, "redwood-drm: IOSurface %d import failed: IOReturn=%#x errno=%d\n",
+			    surface, raw_result, error);
+		}
 		errno = error;
 		return -1;
 	}
