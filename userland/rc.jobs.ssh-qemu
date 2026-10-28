@@ -1,0 +1,17 @@
+# Commands run by the launchd job com.redwood.demo (see com.redwood.demo.plist).
+# A way in under QEMU (RC_JOBS=rc.jobs.ssh-qemu, run with QEMU_NET=1 QEMU_HOSTFWD=tcp::8022-:22, then
+# ssh -p 8022 root@localhost): QEMU's virtio network device (boot-arg virtio_net=1) and sshd of the
+# package manager's prefix, with the keys of ssh/ that build.sh ships. rc.jobs.ssh is the phone's
+# version, where the radio supplies en0. Here:
+#   dhcp          en0 comes up without IFF_UP (bsd/dev/redwood_net.c sets BROADCAST|MULTICAST|SIMPLEX)
+#                 and QEMU's DHCP only answers a client that asks, so configd's IPConfiguration is
+#                 asked to bring it up (net_test dhcp).
+#   awk           gawk's postinst makes /var/jb/usr/bin/awk, but tools/jb-preinstall.py runs no
+#                 scripts; neofetch wants it.
+#   StrictModes   sshd refuses a home whose parents are group-writable, and this root's / is 0775.
+# (From LeisureLinux's oosexgang/hackios-xnu-kernel PR #24.)
+/redwood/bin/net_test dhcp en0
+/redwood/bin/net_test waitaddr en0 90
+/redwood/bin/net_test show
+/var/jb/usr/bin/ln -sf /jb/usr/bin/gawk /var/jb/usr/bin/awk
+/var/jb/usr/sbin/sshd -D -e -h /var/root/.ssh/ssh_host_ed25519_key -o UsePAM=no -o PasswordAuthentication=no -o PermitRootLogin=prohibit-password -o AuthorizedKeysFile=/var/root/.ssh/authorized_keys -o StrictModes=no &

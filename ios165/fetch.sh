@@ -16,6 +16,7 @@
 # Apple's CDN (fetch-from-ipsw.py reads single members of the archive, 4.7 GB + 2.7 GB instead of
 # all 6.2 GB) and unpacked with 7z. Needs: python3, 7z (7-Zip 23 or newer: it reads APFS), cc.
 # About 8 GB of disk while it runs, 5.3 GB afterwards.
+# With the IPSW already on this machine, extract-local.py IPSW takes the images out of it instead.
 #
 #   KEEP=1   keep the downloaded disk images (rootfs.dmg is needed again only after changing
 #            select-system.py; with it in place a second run downloads nothing)

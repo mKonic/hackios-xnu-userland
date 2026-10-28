@@ -82,6 +82,9 @@
 #                    the kernel's apfs_lib has to read every volume back as the directory it was made of
 #                    (../tools/apfs/check-image.sh; the system image takes a few minutes more)
 set -eo pipefail
+# launchd refuses a job plist its group can write ("bad ownership/permissions", error 122) and the images keep
+# the bits of the files made here: so 0644 whatever the shell's umask (002 on many Linux setups).
+umask 022
 cd "$(dirname "$(readlink -f "$0")")"
 source ../xnu-env.sh
 
@@ -125,7 +128,7 @@ IOS_JOBS=${JOBS-"
 [ "${WIFID-1}" != 0 ] && IOS_JOBS="$IOS_JOBS com.apple.wifid"
 # The programs (file names) started with a library of ours inside them: "LIBRARY NAME..." per line
 # (src/inject.c is libredwood.dylib, src/inject_sb.c is libredwood-sb.dylib, src/inject_media.c is
-# libredwood-media.dylib).
+# libredwood-media.dylib, src/inject_chrono.c is libredwood-chrono.dylib).
 # What Sileo runs from /bin (see the package manager's prefix below): the system image's /bin, or the
 # boot volume's bin, bound over the iOS volume's /bin when that is the root (src/init.c, flash_root).
 SILEO_BIN="chmod cp mkdir mv rm"
@@ -135,6 +138,7 @@ SILEO_BIN="chmod cp mkdir mv rm"
 INJECT=${INJECT-"/redwood/lib/libredwood.dylib backboardd containermanagerd containermanagerd_system
 /redwood/lib/libredwood-sb.dylib SpringBoard
 /redwood/lib/libredwood-media.dylib mediaserverd
+/redwood/lib/libredwood-chrono.dylib chronod
 /redwood/lib/libredwood-app.dylib Sileo
 /redwood/lib/libredwood-tweaks.dylib Preferences"}
 # STOREFRONT=1: and a library of ours inside appstored as well (src/inject_store.c). It is not in the
@@ -174,8 +178,12 @@ cp obj/child root/bin/child
 # The data volume into the flash and back (src/var_store.c), and the job that saves it when a run
 # ends: the program and its job together, away from the iOS job list below, which several working
 # copies are editing at once.
-[ -f obj/var_store ] && cp obj/var_store root/bin/
-cp com.redwood.varstore.plist root/LaunchDaemons/
+# Only with the program: a PREBUILT tree has no var_store, and its job then made xpcproxy exit(78)
+# (EX_CONFIG, nothing to run) at every boot.
+if [ -f obj/var_store ]; then
+	cp obj/var_store root/bin/
+	cp com.redwood.varstore.plist root/LaunchDaemons/
+fi
 echo "Darwin on redwood: image built $(date '+%Y-%m-%d %H:%M')" > root/etc/motd
 # 300000 bytes, byte i = (i*31 + (i>>8)) & 0xff; init verifies it through read() and mmap()
 python3 -c "import sys; sys.stdout.buffer.write(bytes((i*31 + (i>>8)) & 0xff for i in range(300000)))" > root/share/pattern.bin
@@ -307,6 +315,9 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 		# program either as the one library the kernel inserts or opened by a library of ours
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-tweaks.dylib -framework CoreFoundation -lobjc \
 			-o obj/libredwood-tweaks.dylib src/inject_tweaks.c
+		# ... inside chronod: widget sessions with more time before their watchdog fires (src/inject_chrono.c)
+		$DYN -O2 -dynamiclib -install_name /redwood/lib/libredwood-chrono.dylib \
+			-o obj/libredwood-chrono.dylib src/inject_chrono.c
 		# ... and inside an application, to say what killed it (src/inject_app.c)
 		$DYN -dynamiclib -install_name /redwood/lib/libredwood-app.dylib -lobjc \
 			-o obj/libredwood-app.dylib src/inject_app.c
@@ -475,6 +486,7 @@ if [ -d $IOS/rootfs/usr/lib ]; then
 	[ -f obj/libredwood-store.dylib ] && cp obj/libredwood-store.dylib root/lib/
 	[ -f obj/libredwood-fairplay.dylib ] && cp obj/libredwood-fairplay.dylib root/lib/
 	[ -f obj/libredwood-app.dylib ] && cp obj/libredwood-app.dylib root/lib/
+	[ -f obj/libredwood-chrono.dylib ] && cp obj/libredwood-chrono.dylib root/lib/
 	[ -f obj/libredwood-tweaks.dylib ] && cp obj/libredwood-tweaks.dylib root/lib/
 	[ -f obj/libredwoodmetal.dylib ] && cp obj/libredwoodmetal.dylib root/lib/
 	[ -f obj/libredwoodair.dylib ] && cp obj/libredwoodair.dylib root/lib/

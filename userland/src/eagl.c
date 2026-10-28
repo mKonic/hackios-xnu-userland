@@ -1288,8 +1288,13 @@ frame_end(struct eagl *e, bool finished)
 		summary(e);
 	}
 	census_report();
-	if (e->frames == 600 && e->errors == 0 && !errors_always) {
+	/*
+	 * Each check is a round trip to the host, so they stop after the first 600 frames of any context,
+	 * errors or not (those are told above); glerrors=1 keeps them.
+	 */
+	if (e->frames == 600 && check_errors && !errors_always) {
 		check_errors = 0;
+		say("redwood-gl: after 600 frames, %u errors; no longer asked for after every call\n", e->errors);
 	}
 	e->last_draws = e->draws;
 	e->calls = e->draws = e->triangles = e->uploads = e->clears = 0;
@@ -4522,7 +4527,14 @@ install(void)
 		 */
 		sync_frames = strstr(arguments, "glsync=1") != NULL ||
 		    (strstr(arguments, "glsync=0") == NULL && strncmp(redwood_gl_library(), "gfx", 3) != 0);
-		if (strstr(arguments, "glwait=0") != NULL || (strstr(arguments, "glwait=1") == NULL && display_waits())) {
+		/*
+		 * The display's driver waits for the submissions of Mesa's freedreno only. gfxstream's host
+		 * decodes what was sent at its own pace, and QEMU reads the colour buffer when the display is
+		 * told of it: a frame not waited for here came out with parts of it not drawn yet (the right
+		 * half of the home screen's icons, at times while they moved). Swipes: 40-42 fps against 42.
+		 */
+		if (strstr(arguments, "glwait=0") != NULL || (strstr(arguments, "glwait=1") == NULL && display_waits() &&
+		    strncmp(redwood_gl_library(), "gfx", 3) != 0)) {
 			wait_for_frames = 0;
 		}
 		say("redwood-gl: a frame is waited for %s\n", wait_for_frames ? "here, before it is handed to the display" :
