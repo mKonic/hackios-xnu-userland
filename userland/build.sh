@@ -81,6 +81,9 @@
 #                    the kernel's apfs_lib has to read every volume back as the directory it was made of
 #                    (../tools/apfs/check-image.sh; the system image takes a few minutes more)
 set -eo pipefail
+# launchd refuses a job plist its group can write ("bad ownership/permissions", error 122) and the images keep
+# the bits of the files made here: so 0644 whatever the shell's umask (002 on many Linux setups).
+umask 022
 cd "$(dirname "$(readlink -f "$0")")"
 source ../xnu-env.sh
 
