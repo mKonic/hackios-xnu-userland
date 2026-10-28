@@ -23,6 +23,20 @@ struct redwood_gl {
 	struct gfx *gfx;
 };
 
+/* (gfx_transport.key_alive) whether the IOSurface of that ID still exists */
+static int
+surface_alive(void *arg, uint64_t key)
+{
+	IOSurfaceRef surface = IOSurfaceLookup((IOSurfaceID)key);
+
+	(void)arg;
+	if (surface == NULL) {
+		return 0;
+	}
+	CFRelease(surface);
+	return 1;
+}
+
 struct redwood_gl *
 redwood_gl_create(int version)
 {
@@ -32,6 +46,7 @@ redwood_gl_create(int version)
 	if (gfx_dev_open(&t) != 0) {
 		return NULL;
 	}
+	t.key_alive = surface_alive;
 	gl = calloc(1, sizeof(*gl));
 	if (gl == NULL || (gl->gfx = gfx_create(&t, version)) == NULL) {
 		free(gl);

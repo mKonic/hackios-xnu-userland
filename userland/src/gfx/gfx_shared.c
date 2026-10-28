@@ -65,10 +65,37 @@ gfx_share_texture(struct gfx *c, uint64_t key, void *base, uint32_t width, uint3
 		s = NULL;
 	}
 	if (s == NULL) {
+		/*
+		 * Each colour buffer holds a copy of its memory in the kernel, so one whose texture is gone
+		 * goes too once its memory does (most IOSurfaces never come back).
+		 */
+		for (int i = 0; c->t.key_alive != NULL && i < GFX_MAX_SHARED; i++) {
+			struct gfx_shared *o = &c->shared[i];
+			if (o->res && o->texture == 0 && !o->dirty && !c->t.key_alive(c->t.arg, o->key) &&
+			    (c->t.res_shown == NULL || !c->t.res_shown(c->t.arg, o->res))) {
+				gfx_forget_shared(c, o->key);
+			}
+		}
 		for (int i = 0; s == NULL && i < GFX_MAX_SHARED; i++) {
 			if (c->shared[i].res == 0) {
 				s = &c->shared[i];
 			}
+		}
+		/*
+		 * Full: of the memories whose texture is gone (each keeps its colour buffer for its next
+		 * texture), the one bound longest ago and not on the display goes.
+		 */
+		struct gfx_shared *oldest = NULL;
+		for (int i = 0; s == NULL && i < GFX_MAX_SHARED; i++) {
+			struct gfx_shared *o = &c->shared[i];
+			if (o->texture == 0 && !o->dirty && (oldest == NULL || o->used < oldest->used) &&
+			    (c->t.res_shown == NULL || !c->t.res_shown(c->t.arg, o->res))) {
+				oldest = o;
+			}
+		}
+		if (s == NULL && oldest != NULL) {
+			gfx_forget_shared(c, oldest->key);      /* (zeroes it: a free slot now) */
+			s = oldest;
 		}
 		if (s == NULL || c->t.res_create(c->t.arg, width, height, &s->res) != 0) {
 			if (s) {
@@ -90,6 +117,7 @@ gfx_share_texture(struct gfx *c, uint64_t key, void *base, uint32_t width, uint3
 		old->texture = 0;
 	}
 	s->texture = texture;
+	s->used = ++c->share_count;
 	s->base = base;
 	s->stride = stride;
 	if (upload) {
