@@ -1287,8 +1287,13 @@ frame_end(struct eagl *e, bool finished)
 		summary(e);
 	}
 	census_report();
-	if (e->frames == 600 && e->errors == 0 && !errors_always) {
+	/*
+	 * Each check is a round trip to the host, so they stop after the first 600 frames of any context,
+	 * errors or not (those are told above); glerrors=1 keeps them.
+	 */
+	if (e->frames == 600 && check_errors && !errors_always) {
 		check_errors = 0;
+		say("redwood-gl: after 600 frames, %u errors; no longer asked for after every call\n", e->errors);
 	}
 	e->last_draws = e->draws;
 	e->calls = e->draws = e->triangles = e->uploads = e->clears = 0;
